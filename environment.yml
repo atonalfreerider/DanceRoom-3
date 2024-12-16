@@ -9,3 +9,4 @@ dependencies:
   - pip:
     - opencv-python
     - scipy
+    - tqdm
