@@ -145,6 +145,33 @@ def __interpolate_poses(poses: List[Optional[List[Dict[str, float]]]], desc: str
 
     return interpolated_poses
 
+def __get_pose_center(joints3d: List[List[float]]) -> np.ndarray:
+    """Get center position of pose (average of hip and spine joints)"""
+    points = np.array(joints3d).reshape(-1, 3)
+    # Use hip joint (index 0) for more stable tracking
+    return points[0] / 1000.0  # Convert to meters
+
+def __calculate_height(joints3d: List[List[float]]) -> float:
+    """Calculate height of figure from top of head to feet in meters"""
+    points = np.array(joints3d).reshape(-1, 3)
+    max_y = np.max(points[:, 1])
+    min_y = np.min(points[:, 1])
+    return float(max_y - min_y) / 1000.0  # Convert to meters
+
+def __is_valid_movement(current_pos: np.ndarray, previous_pos: np.ndarray) -> bool:
+    """Check if movement between frames is within threshold"""
+    MAX_MOVEMENT = 0.5  # meters
+    if previous_pos is None:
+        return True
+    distance = np.linalg.norm(current_pos - previous_pos)
+    return distance <= MAX_MOVEMENT
+
+def __is_similar_height(height1: float, height2: float, threshold: float = 0.15) -> bool:
+    """Check if two heights are similar within threshold"""
+    if height2 is None:
+        return True
+    return abs(height1 - height2) <= threshold
+
 def process_poses(output_dir: str):
     """Process and adjust 3D poses based on camera movement"""
     print("Loading data...")
@@ -164,65 +191,116 @@ def process_poses(output_dir: str):
     print(f"\nTotal frames in poses3d.json: {len(frames)}")
     
     # Lists to store tracked figures
-    figure1_frames = [None] * total_frames  # Pre-allocate with correct size
+    figure1_frames = [None] * total_frames
     figure2_frames = [None] * total_frames
-    previous_figure1_joints = None
-    previous_figure2_joints = None
+    previous_figure1_pos = None
+    previous_figure2_pos = None
+    previous_figure1_height = None
+    previous_figure2_height = None
     
     print("Processing frames...")
     for frame_num in tqdm(sorted(map(int, frames.keys())), desc="Processing frames"):
         frame_str = str(frame_num)
         frame_data = frames[frame_str]
         
-        # Skip empty frames
-        if not frame_data:
-            print("empty frame")
+        if not frame_data or frame_num >= len(raw_rotations):
             continue
+            
+        rotation_matrix = raw_rotations[frame_num]
+        valid_poses = []
         
-        # Get rotation matrix for this frame
-        if frame_num < len(raw_rotations):
-            rotation_matrix = raw_rotations[frame_num]
+        # Process all poses in frame
+        for person_data in frame_data:
+            adjusted_joints = __adjust_3d_points(person_data['joints3d'], rotation_matrix)
+            center = __get_pose_center(adjusted_joints)
+            height = __calculate_height(adjusted_joints)
+            valid_poses.append((adjusted_joints, center, height))
+        
+        # Sort by distance to camera (using center position)
+        valid_poses.sort(key=lambda x: np.linalg.norm(x[1]))
+        
+        # Keep only the two closest poses
+        valid_poses = valid_poses[:2]
+        
+        if not valid_poses:
+            continue
             
-            # Process all poses in this frame
-            all_poses = []
-            
-            for person_data in frame_data:
-                adjusted_joints = __adjust_3d_points(person_data['joints3d'], rotation_matrix)
-                distance = __calculate_distance_to_camera(adjusted_joints)
-                all_poses.append((adjusted_joints, distance))
-            
-            # Sort all poses by distance to camera
-            all_poses.sort(key=lambda x: x[1])
-            
-            # Get the two closest poses if we have at least two poses
-            if len(all_poses) >= 2:
-                pose1, pose2 = all_poses[0][0], all_poses[1][0]
+        # First frame - initialize tracking
+        if previous_figure1_pos is None:
+            if len(valid_poses) >= 2:
+                # Sort by height to ensure taller person is figure1
+                valid_poses.sort(key=lambda x: x[2], reverse=True)
+                pose1, pos1, height1 = valid_poses[0]
+                pose2, pos2, height2 = valid_poses[1]
                 
-                # For first frame, simply assign poses
-                if previous_figure1_joints is None:
-                    previous_figure1_joints = pose1
-                    previous_figure2_joints = pose2
+                # Only initialize if heights are sufficiently different
+                if height1 - height2 > 0.1:  # At least 10cm height difference
                     figure1_frames[frame_num] = __convert_joints_to_xyz_format(pose1)
                     figure2_frames[frame_num] = __convert_joints_to_xyz_format(pose2)
+                    previous_figure1_pos = pos1
+                    previous_figure2_pos = pos2
+                    previous_figure1_height = height1
+                    previous_figure2_height = height2
+            
+        else:
+            # Subsequent frames - track based on position and height
+            if len(valid_poses) >= 2:
+                pose1, pos1, height1 = valid_poses[0]
+                pose2, pos2, height2 = valid_poses[1]
+                
+                # Calculate distances to previous positions
+                dist1_to_prev1 = np.inf if previous_figure1_pos is None else np.linalg.norm(pos1 - previous_figure1_pos)
+                dist2_to_prev1 = np.inf if previous_figure1_pos is None else np.linalg.norm(pos2 - previous_figure1_pos)
+                dist1_to_prev2 = np.inf if previous_figure2_pos is None else np.linalg.norm(pos1 - previous_figure2_pos)
+                dist2_to_prev2 = np.inf if previous_figure2_pos is None else np.linalg.norm(pos2 - previous_figure2_pos)
+                
+                # Check height and movement validity
+                valid1_to_fig1 = (__is_valid_movement(pos1, previous_figure1_pos) and 
+                                __is_similar_height(height1, previous_figure1_height))
+                valid2_to_fig1 = (__is_valid_movement(pos2, previous_figure1_pos) and 
+                                __is_similar_height(height2, previous_figure1_height))
+                valid1_to_fig2 = (__is_valid_movement(pos1, previous_figure2_pos) and 
+                                __is_similar_height(height1, previous_figure2_height))
+                valid2_to_fig2 = (__is_valid_movement(pos2, previous_figure2_pos) and 
+                                __is_similar_height(height2, previous_figure2_height))
+                
+                # Determine best assignments based on distances and validity
+                if valid1_to_fig1 and valid2_to_fig2:
+                    # Both poses match their previous positions
+                    figure1_frames[frame_num] = __convert_joints_to_xyz_format(pose1)
+                    figure2_frames[frame_num] = __convert_joints_to_xyz_format(pose2)
+                    previous_figure1_pos = pos1
+                    previous_figure2_pos = pos2
+                    previous_figure1_height = height1
+                    previous_figure2_height = height2
+                elif valid2_to_fig1 and valid1_to_fig2:
+                    # Poses have swapped positions
+                    figure1_frames[frame_num] = __convert_joints_to_xyz_format(pose2)
+                    figure2_frames[frame_num] = __convert_joints_to_xyz_format(pose1)
+                    previous_figure1_pos = pos2
+                    previous_figure2_pos = pos1
+                    previous_figure1_height = height2
+                    previous_figure2_height = height1
                 else:
-                    # Find best matches for pose
-                    prev_poses = [previous_figure1_joints, previous_figure2_joints]
+                    # Try to match based on height similarity if movement check failed
+                    height_diff1 = abs(height1 - previous_figure1_height) if previous_figure1_height else float('inf')
+                    height_diff2 = abs(height2 - previous_figure1_height) if previous_figure1_height else float('inf')
                     
-                    # Find closest match
-                    match1 = __find_closest_match(pose1, prev_poses)
-                    
-                    # Update tracking
-                    if match1 == 0:
+                    if height_diff1 <= height_diff2 and height_diff1 < 0.15:
                         figure1_frames[frame_num] = __convert_joints_to_xyz_format(pose1)
                         figure2_frames[frame_num] = __convert_joints_to_xyz_format(pose2)
-                        previous_figure1_joints = pose1
-                        previous_figure2_joints = pose2
-                    else:
+                        previous_figure1_pos = pos1
+                        previous_figure2_pos = pos2
+                        previous_figure1_height = height1
+                        previous_figure2_height = height2
+                    elif height_diff2 < 0.15:
                         figure1_frames[frame_num] = __convert_joints_to_xyz_format(pose2)
                         figure2_frames[frame_num] = __convert_joints_to_xyz_format(pose1)
-                        previous_figure1_joints = pose2
-                        previous_figure2_joints = pose1
-    
+                        previous_figure1_pos = pos2
+                        previous_figure2_pos = pos1
+                        previous_figure1_height = height2
+                        previous_figure2_height = height1
+
     print("Interpolating poses...")
     # Interpolate missing poses
     figure1_frames = __interpolate_poses(figure1_frames, "figure 1")
