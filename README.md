@@ -1,8 +1,10 @@
-# DanceRoom-2
+# DanceRoom-3
+
+## INSTALLATION  
 
 conda env create -f environment.yml
 
-## TRACK PREPROCESS
+## TRACK PREPROCESS  
 
 Run DPVO:  
 https://github.com/atonalfreerider/DPVO  
@@ -21,6 +23,18 @@ https://cloud.cp.jku.at/index.php/s/7ik4RrBKTS273gp/download?path=%2F&files=fina
 Output:
 - rhythm json
 
+Run NLF:
+https://github.com/atonalfreerider/nlf
+
+NLF model:
+https://github.com/isarandi/nlf/releases/download/v0.2.0/nlf_l_multi.torchscript
+
+## RUN
+
+Point to folder with poses3d.json and .vo.json
+
+output figure1.json and figure2.json to be provided to HeadMovement
+https://github.com/atonalfreerider/head-movement
 
 
 
