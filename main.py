@@ -8,7 +8,6 @@ from tqdm import tqdm
 
 def __load_vo_data(output_dir: str) -> List[np.ndarray]:
     """Load visual odometry data from json"""
-    # Construct VO json path
     vo_path = output_dir + '/' + [f for f in os.listdir(output_dir) if f.endswith('.vo.json')][0]
 
     try:
@@ -18,19 +17,19 @@ def __load_vo_data(output_dir: str) -> List[np.ndarray]:
         print(f"Warning: No VO data found at {vo_path}")
         return []
 
-    # Get initial camera state
+    # Process each frame
+    rotations = []
     initial_rotation = Rotation.from_quat([0, 1, 0, 0])
 
-    # Process each frame
-    raw_rotations = []  # Store raw rotation matrices for smoothing
-
-    # calculate raw rotations
     for frame_data in vo_data:
-        vo_rotation = Rotation.from_quat(frame_data[3:])
-        relative_rotation = initial_rotation * vo_rotation.inv()
-        raw_rotations.append(relative_rotation.as_matrix())
+        # VO data contains absolute camera orientation
+        camera_rotation = Rotation.from_quat(frame_data[3:])
+        # Calculate world-to-camera transform
+        world_to_camera = camera_rotation * initial_rotation
+        # Store camera-to-world transform to convert points
+        rotations.append(world_to_camera.inv().as_matrix())
 
-    return raw_rotations
+    return rotations
 
 def __load_poses_data(output_dir: str) -> Any | None:
     """Load 3D poses data from json"""
@@ -44,16 +43,17 @@ def __load_poses_data(output_dir: str) -> Any | None:
         return None
 
 def __adjust_3d_points(points: List[List[float]], rotation_matrix: np.ndarray) -> List[List[float]]:
-    """Apply rotation to 3D points"""
-    points_array = np.array(points)
+    """Transform points from camera space to world space"""
+    # Points are in millimeters, convert to meters
+    points_array = np.array(points).reshape(-1, 3) / 1000.0
 
-    # Apply rotation
-    rotated_points = np.dot(points_array, rotation_matrix.T)
+    # Transform points from camera space to world space
+    world_points = np.dot(points_array, rotation_matrix)
     
-    # Restore the original shape
-    rotated_points = np.expand_dims(rotated_points, axis=1)
+    # Convert back to millimeters for consistency with rest of the pipeline
+    world_points = world_points * 1000.0
     
-    return rotated_points.tolist()
+    return world_points.tolist()
 
 def __calculate_distance_to_camera(joints3d: List[List[float]]) -> float:
     """Calculate average distance of all joints to camera origin"""
@@ -148,8 +148,8 @@ def __interpolate_poses(poses: List[Optional[List[Dict[str, float]]]], desc: str
 def __get_pose_center(joints3d: List[List[float]]) -> np.ndarray:
     """Get center position of pose (average of hip and spine joints)"""
     points = np.array(joints3d).reshape(-1, 3)
-    # Use hip joint (index 0) for more stable tracking
-    return points[0] / 1000.0  # Convert to meters
+    # Use hip joint (index 0) for stable tracking, already in millimeters
+    return points[0] / 1000.0  # Convert to meters for distance calculations
 
 def __calculate_height(joints3d: List[List[float]]) -> float:
     """Calculate height of figure from top of head to feet in meters"""
