@@ -6,6 +6,7 @@ from scipy.spatial.transform import Rotation
 from typing import List, Dict, Any
 from tqdm import tqdm
 from collections import deque
+from scipy.interpolate import interp1d
 
 def __load_vo_data(output_dir: str) -> List[np.ndarray]:
     """Load visual odometry data from json"""
@@ -154,6 +155,46 @@ def __apply_moving_average(poses: List[List[Dict[str, float]]], window_size: int
     
     return smoothed_poses
 
+def __interpolate_missing_poses(valid_poses: List[List[Dict]], frame_indices: List[int], total_frames: int) -> List[List[Dict]]:
+    """Interpolate missing poses using verified poses"""
+    if not valid_poses:
+        return []
+        
+    num_joints = len(valid_poses[0])  # Number of joints in pose
+    interpolated_poses = []
+    
+    # Interpolate each joint separately
+    for joint_idx in range(num_joints):
+        # Prepare arrays for interpolation
+        x_points = np.array(frame_indices)
+        y_points = np.array([[pose[joint_idx]['x'], pose[joint_idx]['y'], pose[joint_idx]['z']] 
+                           for pose in valid_poses])
+        
+        # Create interpolation function
+        f = interp1d(x_points, y_points, axis=0, kind='linear', fill_value='extrapolate')
+        
+        # Generate complete sequence
+        all_frames = np.arange(total_frames)
+        interpolated = f(all_frames)
+        
+        # Store interpolated joint data
+        if not interpolated_poses:
+            interpolated_poses = [[{} for _ in range(num_joints)] for _ in range(total_frames)]
+        
+        # Fill in interpolated values
+        for frame_idx, joint_pos in enumerate(interpolated):
+            interpolated_poses[frame_idx][joint_idx] = {
+                'x': float(joint_pos[0]),
+                'y': float(joint_pos[1]),
+                'z': float(joint_pos[2])
+            }
+    
+    return interpolated_poses
+
+def __get_pose_center_of_mass(pose: List[Dict[str, float]]) -> np.ndarray:
+    """Calculate center of mass for a pose"""
+    return np.mean([np.array([j['x'], j['y'], j['z']]) for j in pose], axis=0)
+
 def process_poses(output_dir: str, refine: bool = False):
     """Process and adjust 3D poses based on camera movement"""
     print("Loading data...")
@@ -253,6 +294,116 @@ def process_poses(output_dir: str, refine: bool = False):
             fig2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig2_pose]
             figure1_frames.append(fig1_frame)
             figure2_frames.append(fig2_frame)
+
+    if refine:
+        print("Processing with center tracking...")
+        
+        # Get frame ranges
+        frame_numbers = sorted(map(int, frames.keys()))
+        total_frames = len(frame_numbers)
+        mid_idx = total_frames // 2
+        
+        # Initialize tracking structures
+        valid_fig1_frames = []
+        valid_fig2_frames = []
+        valid_fig1_indices = []
+        valid_fig2_indices = []
+        valid_fig1_centers = []
+        valid_fig2_centers = []
+        
+        # Track frames since last valid pose for radius expansion
+        frames_since_fig1 = 0
+        frames_since_fig2 = 0
+        BASE_RADIUS = 0.5  # Base search radius in meters
+        
+        # Start from middle frame
+        mid_frame = figure1_frames[mid_idx]
+        mid_frame2 = figure2_frames[mid_idx]
+        
+        # Initialize tracking with middle frame
+        valid_fig1_frames.append(mid_frame)
+        valid_fig2_frames.append(mid_frame2)
+        valid_fig1_indices.append(mid_idx)
+        valid_fig2_indices.append(mid_idx)
+        valid_fig1_centers.append(__get_pose_center_of_mass(mid_frame))
+        valid_fig2_centers.append(__get_pose_center_of_mass(mid_frame2))
+        
+        # Process forward
+        for idx in range(mid_idx + 1, len(figure1_frames)):
+            curr_frame1 = figure1_frames[idx]
+            curr_frame2 = figure2_frames[idx]
+            
+            center1 = __get_pose_center_of_mass(curr_frame1)
+            center2 = __get_pose_center_of_mass(curr_frame2)
+            
+            # Calculate adaptive search radius
+            radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
+            radius2 = BASE_RADIUS + (frames_since_fig2 * 0.1)
+            
+            # Check if movement is valid with adaptive radius
+            dist1 = np.linalg.norm(center1 - valid_fig1_centers[-1])
+            dist2 = np.linalg.norm(center2 - valid_fig2_centers[-1])
+            
+            if dist1 <= radius1:
+                valid_fig1_frames.append(curr_frame1)
+                valid_fig1_indices.append(idx)
+                valid_fig1_centers.append(center1)
+                frames_since_fig1 = 0  # Reset counter when pose found
+            else:
+                frames_since_fig1 += 1
+            
+            if dist2 <= radius2:
+                valid_fig2_frames.append(curr_frame2)
+                valid_fig2_indices.append(idx)
+                valid_fig2_centers.append(center2)
+                frames_since_fig2 = 0  # Reset counter when pose found
+            else:
+                frames_since_fig2 += 1
+        
+        # Reset counters for backward pass
+        frames_since_fig1 = 0
+        frames_since_fig2 = 0
+        
+        # Process backward
+        for idx in range(mid_idx - 1, -1, -1):
+            curr_frame1 = figure1_frames[idx]
+            curr_frame2 = figure2_frames[idx]
+            
+            center1 = __get_pose_center_of_mass(curr_frame1)
+            center2 = __get_pose_center_of_mass(curr_frame2)
+            
+            # Calculate adaptive search radius
+            radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
+            radius2 = BASE_RADIUS + (frames_since_fig2 * 0.1)
+            
+            # Check if movement is valid with adaptive radius
+            dist1 = np.linalg.norm(center1 - valid_fig1_centers[0])
+            dist2 = np.linalg.norm(center2 - valid_fig2_centers[0])
+            
+            if dist1 <= radius1:
+                valid_fig1_frames.insert(0, curr_frame1)
+                valid_fig1_indices.insert(0, idx)
+                valid_fig1_centers.insert(0, center1)
+                frames_since_fig1 = 0
+            else:
+                frames_since_fig1 += 1
+            
+            if dist2 <= radius2:
+                valid_fig2_frames.insert(0, curr_frame2)
+                valid_fig2_indices.insert(0, idx)
+                valid_fig2_centers.insert(0, center2)
+                frames_since_fig2 = 0
+            else:
+                frames_since_fig2 += 1
+
+        # Interpolate using gathered valid poses
+        figure1_frames = __interpolate_missing_poses(valid_fig1_frames, valid_fig1_indices, total_frames)
+        figure2_frames = __interpolate_missing_poses(valid_fig2_frames, valid_fig2_indices, total_frames)
+
+    # Ensure we have valid data before proceeding
+    if not figure1_frames or not figure2_frames:
+        print("Error: No valid poses found after processing")
+        return
 
     # Apply floor adjustment and smoothing before saving
     figure1_frames = __adjust_floor_level(figure1_frames)
