@@ -63,17 +63,19 @@ def __get_pose_center(joints3d: List[List[float]]) -> np.ndarray:
     return points[0] / 1000.0  # Convert to meters for distance calculations
 
 def __calculate_skeletal_height(joints3d: List[List[float]]) -> float:
-    """Calculate height by summing leg and torso segments"""
+    """Calculate height using SMPL joint structure"""
     points = np.array(joints3d).reshape(-1, 3) / 1000.0  # Convert to meters
 
-    # Define segments to measure (using COCO joint indices)
+    # Define segments using SMPL joint indices
     segments = [
-        (0, 1),  # hip to spine
-        (1, 2),  # spine to chest
-        (2, 23),  # chest to neck
-        (23, 3),  # neck to head
-        (0, 13),  # hip to knee
-        (13, 14),  # knee to ankle
+        (0, 3),   # Pelvis to Spine1
+        (3, 6),   # Spine1 to Spine2
+        (6, 9),   # Spine2 to Spine3
+        (9, 12),  # Spine3 to Neck
+        (12, 15), # Neck to Head
+        (0, 4),   # Pelvis to L_Knee
+        (4, 7),   # L_Knee to L_Ankle
+        (7, 10),  # L_Ankle to L_Foot
     ]
 
     total_height = 0
@@ -189,23 +191,27 @@ def process_poses(output_dir: str, refine: bool = False):
             adjusted_joints = __adjust_3d_points(person_data['joints3d'], rotation_matrix)
             center = __get_pose_center(adjusted_joints)
             height = __calculate_skeletal_height(adjusted_joints)
-            valid_poses.append((adjusted_joints, center, height))
+            # Store tuple of (joints, center, height, distance_to_camera)
+            distance_to_camera = np.linalg.norm(center)
+            valid_poses.append((adjusted_joints, center, height, distance_to_camera))
         
         # Ensure at least two poses
         if len(valid_poses) < 2:
             print(f"Warning: Frame {frame_num} has less than 2 poses, skipping")
             continue
             
-        # Sort by distance to camera (using center position)
-        valid_poses.sort(key=lambda x: np.linalg.norm(x[1]))
+        # First sort by distance to camera
+        valid_poses.sort(key=lambda x: x[3])  # Sort by distance_to_camera
+        closest_poses = valid_poses[:2]  # Take two closest poses
         
-        # Keep only the two closest poses
-        valid_poses = valid_poses[:2]
+        # Then sort these two by height
+        closest_poses.sort(key=lambda x: x[2], reverse=True)  # Sort by height (descending)
         
         if not refine:
-            # Simple mode: always take the two closest poses
-            pose1, _, _ = valid_poses[0]
-            pose2, _, _ = valid_poses[1]
+            # Simple mode: closest two poses, taller is figure1
+            pose1, _, _, _ = closest_poses[0]  # Taller pose
+            pose2, _, _, _ = closest_poses[1]  # Shorter pose
+            
             # Convert to xyz object format
             figure1_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in pose1]
             figure2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in pose2]
@@ -213,36 +219,31 @@ def process_poses(output_dir: str, refine: bool = False):
             figure2_frames.append(figure2_frame)
         else:
             # Refined mode with tracking logic
-            pose1, pos1, height1 = valid_poses[0]
-            pose2, pos2, height2 = valid_poses[1]
+            pose1, pos1, height1, _ = closest_poses[0]  # Taller pose
+            pose2, pos2, height2, _ = closest_poses[1]  # Shorter pose
             
             if previous_figure1_pos is None:
-                # Sort by height to ensure taller person is figure1
-                if height1 >= height2:
-                    fig1_pose, fig2_pose = pose1, pose2
-                    previous_figure1_pos= pos1
-                    previous_figure1_height = height1
-                else:
-                    fig1_pose, fig2_pose = pose2, pose1
-                    previous_figure1_pos = pos2
-                    previous_figure1_height = height2
+                # Initialize tracking with taller pose as figure1
+                fig1_pose, fig2_pose = pose1, pose2
+                previous_figure1_pos = pos1
+                previous_figure1_height = height1
             else:
-                # Use tracking logic from original implementation
+                # Use tracking logic but maintain height order
                 valid1_to_fig1 = (__is_valid_movement(pos1, previous_figure1_pos) and 
                                 __is_similar_height(height1, previous_figure1_height))
                 valid2_to_fig1 = (__is_valid_movement(pos2, previous_figure1_pos) and 
                                 __is_similar_height(height2, previous_figure1_height))
                 
-                if valid1_to_fig1:
+                if valid1_to_fig1 and height1 >= height2:
                     fig1_pose, fig2_pose = pose1, pose2
                     previous_figure1_pos = pos1
                     previous_figure1_height = height1
-                elif valid2_to_fig1:
+                elif valid2_to_fig1 and height2 > height1:
                     fig1_pose, fig2_pose = pose2, pose1
                     previous_figure1_pos = pos2
                     previous_figure1_height = height2
                 else:
-                    # Default to distance-based assignment if tracking fails
+                    # Default to height-based assignment if tracking fails
                     fig1_pose, fig2_pose = pose1, pose2
                     previous_figure1_pos = pos1
                     previous_figure1_height = height1
