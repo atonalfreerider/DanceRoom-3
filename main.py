@@ -5,6 +5,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 from typing import List, Dict, Any
 from tqdm import tqdm
+from collections import deque
 
 def __load_vo_data(output_dir: str) -> List[np.ndarray]:
     """Load visual odometry data from json"""
@@ -95,6 +96,61 @@ def __is_similar_height(height1: float, height2: float, threshold: float = 0.15)
     if height2 is None:
         return True
     return abs(height1 - height2) <= threshold
+
+def __adjust_floor_level(poses: List[List[Dict[str, float]]]) -> List[List[Dict[str, float]]]:
+    """Adjust poses so that the lowest point in each frame is at y=0"""
+    adjusted_poses = []
+    
+    # Process each frame independently
+    for frame in poses:
+        # Find the lowest y value in this frame
+        min_y = min(joint['y'] for joint in frame)
+        
+        # Adjust all joints in this frame relative to its minimum y
+        adjusted_frame = [
+            {'x': joint['x'], 
+             'y': joint['y'] - min_y, 
+             'z': joint['z']} 
+            for joint in frame
+        ]
+        adjusted_poses.append(adjusted_frame)
+    
+    return adjusted_poses
+
+def __apply_moving_average(poses: List[List[Dict[str, float]]], window_size: int = 10) -> List[List[Dict[str, float]]]:
+    """Apply moving average smoothing to each joint separately"""
+    if not poses:
+        return poses
+    
+    num_frames = len(poses)
+    num_joints = len(poses[0])
+    smoothed_poses = [[] for _ in range(num_frames)]
+    
+    # Process each joint separately
+    for joint_idx in range(num_joints):
+        # Separate queues for x, y, z coordinates
+        x_window = deque(maxlen=window_size)
+        y_window = deque(maxlen=window_size)
+        z_window = deque(maxlen=window_size)
+        
+        # Process all frames for this joint
+        for frame_idx in range(num_frames):
+            joint = poses[frame_idx][joint_idx]
+            
+            x_window.append(joint['x'])
+            y_window.append(joint['y'])
+            z_window.append(joint['z'])
+            
+            # Calculate moving averages
+            smoothed_joint = {
+                'x': sum(x_window) / len(x_window),
+                'y': sum(y_window) / len(y_window),
+                'z': sum(z_window) / len(z_window)
+            }
+            
+            smoothed_poses[frame_idx].append(smoothed_joint)
+    
+    return smoothed_poses
 
 def process_poses(output_dir: str, refine: bool = False):
     """Process and adjust 3D poses based on camera movement"""
@@ -196,6 +252,13 @@ def process_poses(output_dir: str, refine: bool = False):
             fig2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig2_pose]
             figure1_frames.append(fig1_frame)
             figure2_frames.append(fig2_frame)
+
+    # Apply floor adjustment and smoothing before saving
+    figure1_frames = __adjust_floor_level(figure1_frames)
+    figure2_frames = __adjust_floor_level(figure2_frames)
+    
+    figure1_frames = __apply_moving_average(figure1_frames)
+    figure2_frames = __apply_moving_average(figure2_frames)
 
     print("Saving results...")
     # Save figure1.json and figure2.json with the new format
