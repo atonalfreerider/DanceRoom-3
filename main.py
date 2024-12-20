@@ -100,25 +100,39 @@ def __is_similar_height(height1: float, height2: float, threshold: float = 0.15)
         return True
     return abs(height1 - height2) <= threshold
 
-def __adjust_floor_level(poses: List[List[Dict[str, float]]]) -> List[List[Dict[str, float]]]:
+def __adjust_floor_level(poses1: List[List[Dict[str, float]]], poses2: List[List[Dict[str, float]]]) -> tuple[List[List[Dict[str, float]]], List[List[Dict[str, float]]]]:
     """Adjust poses so that the lowest point in each frame is at y=0"""
-    adjusted_poses = []
+    adjusted_poses1 = []
+    adjusted_poses2 = []
+    
+    # Indices for toe joints
+    toe_indices = [10, 11]
     
     # Process each frame independently
-    for frame in poses:
-        # Find the lowest y value in this frame
-        min_y = min(joint['y'] for joint in frame)
+    for frame1, frame2 in zip(poses1, poses2):
+        # Find the lowest y value in this frame for both figures
+        min_y1 = min(frame1[idx]['y'] for idx in toe_indices)
+        min_y2 = min(frame2[idx]['y'] for idx in toe_indices)
+        global_min_y = min(min_y1, min_y2)
         
-        # Adjust all joints in this frame relative to its minimum y
-        adjusted_frame = [
+        # Adjust all joints in this frame relative to the global minimum y
+        adjusted_frame1 = [
             {'x': joint['x'], 
-             'y': joint['y'] - min_y, 
+             'y': joint['y'] - global_min_y, 
              'z': joint['z']} 
-            for joint in frame
+            for joint in frame1
         ]
-        adjusted_poses.append(adjusted_frame)
+        adjusted_frame2 = [
+            {'x': joint['x'], 
+             'y': joint['y'] - global_min_y, 
+             'z': joint['z']} 
+            for joint in frame2
+        ]
+        
+        adjusted_poses1.append(adjusted_frame1)
+        adjusted_poses2.append(adjusted_frame2)
     
-    return adjusted_poses
+    return adjusted_poses1, adjusted_poses2
 
 def __apply_moving_average(poses: List[List[Dict[str, float]]], window_size: int = 6) -> List[List[Dict[str, float]]]:
     """Apply moving average smoothing to each joint separately"""
@@ -553,8 +567,7 @@ def process_poses(output_dir: str):
     figure1_frames, figure2_frames = __correct_foot_slip(figure1_frames, figure2_frames)
 
     # Apply floor adjustment and smoothing before saving
-    figure1_frames = __adjust_floor_level(figure1_frames)
-    figure2_frames = __adjust_floor_level(figure2_frames)
+    figure1_frames, figure2_frames = __adjust_floor_level(figure1_frames, figure2_frames)
     
     figure1_frames = __apply_moving_average(figure1_frames)
     figure2_frames = __apply_moving_average(figure2_frames)
