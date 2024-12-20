@@ -195,7 +195,7 @@ def __get_pose_center_of_mass(pose: List[Dict[str, float]]) -> np.ndarray:
     """Calculate center of mass for a pose"""
     return np.mean([np.array([j['x'], j['y'], j['z']]) for j in pose], axis=0)
 
-def process_poses(output_dir: str, refine: bool = False):
+def process_poses(output_dir: str):
     """Process and adjust 3D poses based on camera movement"""
     print("Loading data...")
     raw_rotations = __load_vo_data(output_dir)
@@ -248,157 +248,145 @@ def process_poses(output_dir: str, refine: bool = False):
         # Then sort these two by height
         closest_poses.sort(key=lambda x: x[2], reverse=True)  # Sort by height (descending)
         
-        if not refine:
-            # Simple mode: closest two poses, taller is figure1
-            pose1, _, _, _ = closest_poses[0]  # Taller pose
-            pose2, _, _, _ = closest_poses[1]  # Shorter pose
-            
-            # Convert to xyz object format
-            figure1_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in pose1]
-            figure2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in pose2]
-            figure1_frames.append(figure1_frame)
-            figure2_frames.append(figure2_frame)
+        # Refined mode with tracking logic
+        pose1, pos1, height1, _ = closest_poses[0]  # Taller pose
+        pose2, pos2, height2, _ = closest_poses[1]  # Shorter pose
+        
+        if previous_figure1_pos is None:
+            # Initialize tracking with taller pose as figure1
+            fig1_pose, fig2_pose = pose1, pose2
+            previous_figure1_pos = pos1
+            previous_figure1_height = height1
         else:
-            # Refined mode with tracking logic
-            pose1, pos1, height1, _ = closest_poses[0]  # Taller pose
-            pose2, pos2, height2, _ = closest_poses[1]  # Shorter pose
+            # Use tracking logic but maintain height order
+            valid1_to_fig1 = (__is_valid_movement(pos1, previous_figure1_pos) and 
+                            __is_similar_height(height1, previous_figure1_height))
+            valid2_to_fig1 = (__is_valid_movement(pos2, previous_figure1_pos) and 
+                            __is_similar_height(height2, previous_figure1_height))
             
-            if previous_figure1_pos is None:
-                # Initialize tracking with taller pose as figure1
+            if valid1_to_fig1 and height1 >= height2:
                 fig1_pose, fig2_pose = pose1, pose2
                 previous_figure1_pos = pos1
                 previous_figure1_height = height1
+            elif valid2_to_fig1 and height2 > height1:
+                fig1_pose, fig2_pose = pose2, pose1
+                previous_figure1_pos = pos2
+                previous_figure1_height = height2
             else:
-                # Use tracking logic but maintain height order
-                valid1_to_fig1 = (__is_valid_movement(pos1, previous_figure1_pos) and 
-                                __is_similar_height(height1, previous_figure1_height))
-                valid2_to_fig1 = (__is_valid_movement(pos2, previous_figure1_pos) and 
-                                __is_similar_height(height2, previous_figure1_height))
-                
-                if valid1_to_fig1 and height1 >= height2:
-                    fig1_pose, fig2_pose = pose1, pose2
-                    previous_figure1_pos = pos1
-                    previous_figure1_height = height1
-                elif valid2_to_fig1 and height2 > height1:
-                    fig1_pose, fig2_pose = pose2, pose1
-                    previous_figure1_pos = pos2
-                    previous_figure1_height = height2
-                else:
-                    # Default to height-based assignment if tracking fails
-                    fig1_pose, fig2_pose = pose1, pose2
-                    previous_figure1_pos = pos1
-                    previous_figure1_height = height1
-            
-            # Convert to xyz object format
-            fig1_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig1_pose]
-            fig2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig2_pose]
-            figure1_frames.append(fig1_frame)
-            figure2_frames.append(fig2_frame)
+                # Default to height-based assignment if tracking fails
+                fig1_pose, fig2_pose = pose1, pose2
+                previous_figure1_pos = pos1
+                previous_figure1_height = height1
+        
+        # Convert to xyz object format
+        fig1_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig1_pose]
+        fig2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig2_pose]
+        figure1_frames.append(fig1_frame)
+        figure2_frames.append(fig2_frame)
 
-    if refine:
-        print("Processing with center tracking...")
+    print("Processing with center tracking...")
+    
+    # Get frame ranges
+    frame_numbers = sorted(map(int, frames.keys()))
+    total_frames = len(frame_numbers)
+    mid_idx = total_frames // 2
+    
+    # Initialize tracking structures
+    valid_fig1_frames = []
+    valid_fig2_frames = []
+    valid_fig1_indices = []
+    valid_fig2_indices = []
+    valid_fig1_centers = []
+    valid_fig2_centers = []
+    
+    # Track frames since last valid pose for radius expansion
+    frames_since_fig1 = 0
+    frames_since_fig2 = 0
+    BASE_RADIUS = 0.5  # Base search radius in meters
+    
+    # Start from middle frame
+    mid_frame = figure1_frames[mid_idx]
+    mid_frame2 = figure2_frames[mid_idx]
+    
+    # Initialize tracking with middle frame
+    valid_fig1_frames.append(mid_frame)
+    valid_fig2_frames.append(mid_frame2)
+    valid_fig1_indices.append(mid_idx)
+    valid_fig2_indices.append(mid_idx)
+    valid_fig1_centers.append(__get_pose_center_of_mass(mid_frame))
+    valid_fig2_centers.append(__get_pose_center_of_mass(mid_frame2))
+    
+    # Process forward
+    for idx in range(mid_idx + 1, len(figure1_frames)):
+        curr_frame1 = figure1_frames[idx]
+        curr_frame2 = figure2_frames[idx]
         
-        # Get frame ranges
-        frame_numbers = sorted(map(int, frames.keys()))
-        total_frames = len(frame_numbers)
-        mid_idx = total_frames // 2
+        center1 = __get_pose_center_of_mass(curr_frame1)
+        center2 = __get_pose_center_of_mass(curr_frame2)
         
-        # Initialize tracking structures
-        valid_fig1_frames = []
-        valid_fig2_frames = []
-        valid_fig1_indices = []
-        valid_fig2_indices = []
-        valid_fig1_centers = []
-        valid_fig2_centers = []
+        # Calculate adaptive search radius
+        radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
+        radius2 = BASE_RADIUS + (frames_since_fig2 * 0.1)
         
-        # Track frames since last valid pose for radius expansion
-        frames_since_fig1 = 0
-        frames_since_fig2 = 0
-        BASE_RADIUS = 0.5  # Base search radius in meters
+        # Check if movement is valid with adaptive radius
+        dist1 = np.linalg.norm(center1 - valid_fig1_centers[-1])
+        dist2 = np.linalg.norm(center2 - valid_fig2_centers[-1])
         
-        # Start from middle frame
-        mid_frame = figure1_frames[mid_idx]
-        mid_frame2 = figure2_frames[mid_idx]
+        if dist1 <= radius1:
+            valid_fig1_frames.append(curr_frame1)
+            valid_fig1_indices.append(idx)
+            valid_fig1_centers.append(center1)
+            frames_since_fig1 = 0  # Reset counter when pose found
+        else:
+            frames_since_fig1 += 1
         
-        # Initialize tracking with middle frame
-        valid_fig1_frames.append(mid_frame)
-        valid_fig2_frames.append(mid_frame2)
-        valid_fig1_indices.append(mid_idx)
-        valid_fig2_indices.append(mid_idx)
-        valid_fig1_centers.append(__get_pose_center_of_mass(mid_frame))
-        valid_fig2_centers.append(__get_pose_center_of_mass(mid_frame2))
+        if dist2 <= radius2:
+            valid_fig2_frames.append(curr_frame2)
+            valid_fig2_indices.append(idx)
+            valid_fig2_centers.append(center2)
+            frames_since_fig2 = 0  # Reset counter when pose found
+        else:
+            frames_since_fig2 += 1
+    
+    # Reset counters for backward pass
+    frames_since_fig1 = 0
+    frames_since_fig2 = 0
+    
+    # Process backward
+    for idx in range(mid_idx - 1, -1, -1):
+        curr_frame1 = figure1_frames[idx]
+        curr_frame2 = figure2_frames[idx]
         
-        # Process forward
-        for idx in range(mid_idx + 1, len(figure1_frames)):
-            curr_frame1 = figure1_frames[idx]
-            curr_frame2 = figure2_frames[idx]
-            
-            center1 = __get_pose_center_of_mass(curr_frame1)
-            center2 = __get_pose_center_of_mass(curr_frame2)
-            
-            # Calculate adaptive search radius
-            radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
-            radius2 = BASE_RADIUS + (frames_since_fig2 * 0.1)
-            
-            # Check if movement is valid with adaptive radius
-            dist1 = np.linalg.norm(center1 - valid_fig1_centers[-1])
-            dist2 = np.linalg.norm(center2 - valid_fig2_centers[-1])
-            
-            if dist1 <= radius1:
-                valid_fig1_frames.append(curr_frame1)
-                valid_fig1_indices.append(idx)
-                valid_fig1_centers.append(center1)
-                frames_since_fig1 = 0  # Reset counter when pose found
-            else:
-                frames_since_fig1 += 1
-            
-            if dist2 <= radius2:
-                valid_fig2_frames.append(curr_frame2)
-                valid_fig2_indices.append(idx)
-                valid_fig2_centers.append(center2)
-                frames_since_fig2 = 0  # Reset counter when pose found
-            else:
-                frames_since_fig2 += 1
+        center1 = __get_pose_center_of_mass(curr_frame1)
+        center2 = __get_pose_center_of_mass(curr_frame2)
         
-        # Reset counters for backward pass
-        frames_since_fig1 = 0
-        frames_since_fig2 = 0
+        # Calculate adaptive search radius
+        radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
+        radius2 = BASE_RADIUS + (frames_since_fig2 * 0.1)
         
-        # Process backward
-        for idx in range(mid_idx - 1, -1, -1):
-            curr_frame1 = figure1_frames[idx]
-            curr_frame2 = figure2_frames[idx]
-            
-            center1 = __get_pose_center_of_mass(curr_frame1)
-            center2 = __get_pose_center_of_mass(curr_frame2)
-            
-            # Calculate adaptive search radius
-            radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
-            radius2 = BASE_RADIUS + (frames_since_fig2 * 0.1)
-            
-            # Check if movement is valid with adaptive radius
-            dist1 = np.linalg.norm(center1 - valid_fig1_centers[0])
-            dist2 = np.linalg.norm(center2 - valid_fig2_centers[0])
-            
-            if dist1 <= radius1:
-                valid_fig1_frames.insert(0, curr_frame1)
-                valid_fig1_indices.insert(0, idx)
-                valid_fig1_centers.insert(0, center1)
-                frames_since_fig1 = 0
-            else:
-                frames_since_fig1 += 1
-            
-            if dist2 <= radius2:
-                valid_fig2_frames.insert(0, curr_frame2)
-                valid_fig2_indices.insert(0, idx)
-                valid_fig2_centers.insert(0, center2)
-                frames_since_fig2 = 0
-            else:
-                frames_since_fig2 += 1
+        # Check if movement is valid with adaptive radius
+        dist1 = np.linalg.norm(center1 - valid_fig1_centers[0])
+        dist2 = np.linalg.norm(center2 - valid_fig2_centers[0])
+        
+        if dist1 <= radius1:
+            valid_fig1_frames.insert(0, curr_frame1)
+            valid_fig1_indices.insert(0, idx)
+            valid_fig1_centers.insert(0, center1)
+            frames_since_fig1 = 0
+        else:
+            frames_since_fig1 += 1
+        
+        if dist2 <= radius2:
+            valid_fig2_frames.insert(0, curr_frame2)
+            valid_fig2_indices.insert(0, idx)
+            valid_fig2_centers.insert(0, center2)
+            frames_since_fig2 = 0
+        else:
+            frames_since_fig2 += 1
 
-        # Interpolate using gathered valid poses
-        figure1_frames = __interpolate_missing_poses(valid_fig1_frames, valid_fig1_indices, total_frames)
-        figure2_frames = __interpolate_missing_poses(valid_fig2_frames, valid_fig2_indices, total_frames)
+    # Interpolate using gathered valid poses
+    figure1_frames = __interpolate_missing_poses(valid_fig1_frames, valid_fig1_indices, total_frames)
+    figure2_frames = __interpolate_missing_poses(valid_fig2_frames, valid_fig2_indices, total_frames)
 
     # Ensure we have valid data before proceeding
     if not figure1_frames or not figure2_frames:
@@ -425,7 +413,6 @@ def process_poses(output_dir: str, refine: bool = False):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Adjust 3D poses based on camera movement.")
     parser.add_argument("--output_dir", help="Path to the output directory", required=True)
-    parser.add_argument("--refine", action="store_true", help="Enable pose refinement and tracking")
     args = parser.parse_args()
 
-    process_poses(args.output_dir, args.refine)
+    process_poses(args.output_dir)
