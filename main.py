@@ -51,9 +51,9 @@ def __adjust_3d_points(points: List[List[float]], rotation_matrix: np.ndarray) -
 
     # Transform points from camera space to world space
     world_points = np.dot(points_array, rotation_matrix)
-    
-    # Convert back to millimeters for consistency with rest of the pipeline
-    world_points = world_points * 1000.0
+
+    # Flip the sign for all y points
+    world_points[:, 1] = -world_points[:, 1]
     
     return world_points.tolist()
 
@@ -61,11 +61,11 @@ def __get_pose_center(joints3d: List[List[float]]) -> np.ndarray:
     """Get center position of pose (average of hip and spine joints)"""
     points = np.array(joints3d).reshape(-1, 3)
     # Use hip joint (index 0) for stable tracking, already in millimeters
-    return points[0] / 1000.0  # Convert to meters for distance calculations
+    return points[0]
 
 def __calculate_skeletal_height(joints3d: List[List[float]]) -> float:
     """Calculate height using SMPL joint structure"""
-    points = np.array(joints3d).reshape(-1, 3) / 1000.0  # Convert to meters
+    points = np.array(joints3d).reshape(-1, 3)
 
     # Define segments using SMPL joint indices
     segments = [
@@ -429,8 +429,8 @@ def process_poses(output_dir: str):
                 previous_figure1_height = height1
         
         # Convert to xyz object format
-        fig1_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig1_pose]
-        fig2_frame = [{"x": joint[0]/1000.0, "y": -joint[1]/1000.0, "z": joint[2]/1000.0} for joint in fig2_pose]
+        fig1_frame = [{"x": joint[0], "y": joint[1], "z": joint[2]} for joint in fig1_pose]
+        fig2_frame = [{"x": joint[0], "y": joint[1], "z": joint[2]} for joint in fig2_pose]
         figure1_frames.append(fig1_frame)
         figure2_frames.append(fig2_frame)
 
