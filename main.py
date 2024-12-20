@@ -359,6 +359,50 @@ def __correct_foot_slip(poses1: List[List[Dict[str, float]]], poses2: List[List[
     
     return corrected_poses1, corrected_poses2
 
+def __apply_shadow_smoothing(poses: List[List[Dict[str, float]]], window_size: int = 12) -> List[List[Dict[str, float]]]:
+    """Apply moving average smoothing to the geometric center of each pose's shadow on the floor (XZ plane)"""
+    if not poses:
+        return poses
+    
+    num_frames = len(poses)
+    smoothed_poses = [[] for _ in range(num_frames)]
+    
+    # Separate queues for x, z coordinates of the shadow center
+    x_window = deque(maxlen=window_size)
+    z_window = deque(maxlen=window_size)
+    
+    # Process all frames
+    for frame_idx in range(num_frames):
+        frame = poses[frame_idx]
+        
+        # Calculate the geometric center of the shadow (XZ plane)
+        x_center = np.mean([joint['x'] for joint in frame])
+        z_center = np.mean([joint['z'] for joint in frame])
+        
+        x_window.append(x_center)
+        z_window.append(z_center)
+        
+        # Calculate moving averages
+        smoothed_x_center = sum(x_window) / len(x_window)
+        smoothed_z_center = sum(z_window) / len(z_window)
+        
+        # Calculate the translation needed to smooth the shadow
+        translation_x = smoothed_x_center - x_center
+        translation_z = smoothed_z_center - z_center
+        
+        # Apply the translation to all joints in the frame
+        smoothed_frame = []
+        for joint in frame:
+            smoothed_frame.append({
+                'x': joint['x'] + translation_x,
+                'y': joint['y'],
+                'z': joint['z'] + translation_z
+            })
+        
+        smoothed_poses[frame_idx] = smoothed_frame
+    
+    return smoothed_poses
+
 def process_poses(output_dir: str):
     """Process and adjust 3D poses based on camera movement"""
     print("Loading data...")
@@ -566,9 +610,14 @@ def process_poses(output_dir: str):
     print("Correcting foot slip...")
     figure1_frames, figure2_frames = __correct_foot_slip(figure1_frames, figure2_frames)
 
-    # Apply floor adjustment and smoothing before saving
+    # Apply floor adjustment
     figure1_frames, figure2_frames = __adjust_floor_level(figure1_frames, figure2_frames)
     
+    # Apply shadow smoothing
+    figure1_frames = __apply_shadow_smoothing(figure1_frames)
+    figure2_frames = __apply_shadow_smoothing(figure2_frames)
+    
+    # Apply joint by joint moving average
     figure1_frames = __apply_moving_average(figure1_frames)
     figure2_frames = __apply_moving_average(figure2_frames)
 
