@@ -35,7 +35,7 @@ def __load_vo_data(output_dir: str) -> List[np.ndarray]:
 
 def __load_poses_data(output_dir: str) -> Any | None:
     """Load 3D poses data from json"""
-    poses_path = output_dir + '/' + [f for f in os.listdir(output_dir) if f == 'poses3d.json'][0]
+    poses_path = output_dir + '/' + [f for f in os.listdir(output_dir) if f.endswith('.poses3d.json')][0]
     
     try:
         with open(poses_path, 'r') as f:
@@ -120,7 +120,7 @@ def __adjust_floor_level(poses: List[List[Dict[str, float]]]) -> List[List[Dict[
     
     return adjusted_poses
 
-def __apply_moving_average(poses: List[List[Dict[str, float]]], window_size: int = 10) -> List[List[Dict[str, float]]]:
+def __apply_moving_average(poses: List[List[Dict[str, float]]], window_size: int = 6) -> List[List[Dict[str, float]]]:
     """Apply moving average smoothing to each joint separately"""
     if not poses:
         return poses
@@ -194,6 +194,156 @@ def __interpolate_missing_poses(valid_poses: List[List[Dict]], frame_indices: Li
 def __get_pose_center_of_mass(pose: List[Dict[str, float]]) -> np.ndarray:
     """Calculate center of mass for a pose"""
     return np.mean([np.array([j['x'], j['y'], j['z']]) for j in pose], axis=0)
+
+def __calculate_limb_lengths(pose: List[Dict[str, float]]) -> Dict[str, float]:
+    """Calculate lengths of key limbs in a pose"""
+    limb_pairs = {
+        'spine': (0, 3),      # Pelvis to Spine1
+        'torso': (3, 6),      # Spine1 to Spine2
+        'chest': (6, 9),      # Spine2 to Spine3
+        'neck': (9, 12),      # Spine3 to Neck
+        'head': (12, 15),     # Neck to Head
+        'left_thigh': (1, 4), # L_Hip to L_Knee
+        'left_shin': (4, 7),  # L_Knee to L_Ankle
+        'left_foot': (7, 10), # L_Ankle to L_Foot
+        'right_thigh': (2, 5), # R_Hip to R_Knee
+        'right_shin': (5, 8),  # R_Knee to R_Ankle
+        'right_foot': (8, 11), # R_Ankle to R_Foot
+        'left_upper_arm': (16, 18),  # L_Shoulder to L_Elbow
+        'left_forearm': (18, 20),    # L_Elbow to L_Wrist
+        'left_hand': (20, 22),       # L_Wrist to L_Hand
+        'right_upper_arm': (17, 19),  # R_Shoulder to R_Elbow
+        'right_forearm': (19, 21),    # R_Elbow to R_Wrist
+        'right_hand': (21, 23)        # R_Wrist to R_Hand
+    }
+    
+    lengths = {}
+    for limb, (start_idx, end_idx) in limb_pairs.items():
+        start = np.array([pose[start_idx]['x'], pose[start_idx]['y'], pose[start_idx]['z']])
+        end = np.array([pose[end_idx]['x'], pose[end_idx]['y'], pose[end_idx]['z']])
+        lengths[limb] = np.linalg.norm(end - start)
+    
+    return lengths
+
+def __normalize_body_scale(poses: List[List[Dict[str, float]]]) -> List[List[Dict[str, float]]]:
+    """Normalize body scale using median limb lengths"""
+    if not poses:
+        return poses
+        
+    # Calculate limb lengths for all frames
+    all_lengths = [__calculate_limb_lengths(pose) for pose in poses]
+    
+    # Calculate median length for each limb
+    median_lengths = {}
+    for limb in all_lengths[0].keys():
+        lengths = [frame_lengths[limb] for frame_lengths in all_lengths]
+        median_lengths[limb] = np.median(lengths)
+    
+    # Calculate average scale factor across all limbs for each frame
+    scale_factors = []
+    for frame_lengths in all_lengths:
+        ratios = [median_lengths[limb] / frame_lengths[limb] for limb in frame_lengths.keys()]
+        scale_factors.append(np.median(ratios))
+    
+    # Apply scaling to each frame
+    normalized_poses = []
+    for frame_idx, pose in enumerate(poses):
+        scale = scale_factors[frame_idx]
+        # Calculate center of pose
+        center = __get_pose_center_of_mass(pose)
+        
+        # Scale points relative to center
+        normalized_frame = []
+        for joint in pose:
+            point = np.array([joint['x'], joint['y'], joint['z']])
+            vector_to_center = point - center
+            scaled_vector = vector_to_center * scale
+            scaled_point = center + scaled_vector
+            
+            normalized_frame.append({
+                'x': float(scaled_point[0]),
+                'y': float(scaled_point[1]),
+                'z': float(scaled_point[2])
+            })
+        
+        normalized_poses.append(normalized_frame)
+    
+    return normalized_poses
+
+def __correct_foot_slip(poses1: List[List[Dict[str, float]]], poses2: List[List[Dict[str, float]]]) -> tuple[List[List[Dict[str, float]]], List[List[Dict[str, float]]]]:
+    """Correct foot slip by finding the most stationary foot across both poses and applying the same correction"""
+    if not poses1 or not poses2:
+        return poses1, poses2
+    
+    # Indices for foot joints
+    left_foot_idx = 10   # L_Foot
+    right_foot_idx = 11  # R_Foot
+    
+    corrected_poses1 = [poses1[0]]  # Start with first frame
+    corrected_poses2 = [poses2[0]]  # Start with first frame
+    
+    for i in range(1, len(poses1)):
+        # Get current poses and previously corrected poses
+        current_pose1 = poses1[i]
+        current_pose2 = poses2[i]
+        prev_pose1 = corrected_poses1[-1]  # Use last corrected pose
+        prev_pose2 = corrected_poses2[-1]  # Use last corrected pose
+        
+        # Extract only x,z coordinates for feet positions
+        def get_xz(joint): return np.array([joint['x'], joint['z']])
+        
+        # Figure 1 feet
+        left1_current = get_xz(current_pose1[left_foot_idx])
+        right1_current = get_xz(current_pose1[right_foot_idx])
+        left1_prev = get_xz(prev_pose1[left_foot_idx])
+        right1_prev = get_xz(prev_pose1[right_foot_idx])
+        
+        # Figure 2 feet
+        left2_current = get_xz(current_pose2[left_foot_idx])
+        right2_current = get_xz(current_pose2[right_foot_idx])
+        left2_prev = get_xz(prev_pose2[left_foot_idx])
+        right2_prev = get_xz(prev_pose2[right_foot_idx])
+        
+        # Calculate movement vectors for all feet (x,z only)
+        movements = [
+            (left1_current - left1_prev),   # Figure 1 left foot
+            (right1_current - right1_prev),  # Figure 1 right foot
+            (left2_current - left2_prev),    # Figure 2 left foot
+            (right2_current - right2_prev)   # Figure 2 right foot
+        ]
+        
+        # Find the movement with smallest magnitude
+        movement_magnitudes = [np.linalg.norm(m) for m in movements]
+        min_movement_idx = np.argmin(movement_magnitudes)
+        correction_xz = movements[min_movement_idx]
+        
+        # Create full correction vector (x,y,z) where y=0
+        correction = np.array([correction_xz[0], 0, correction_xz[1]])
+        
+        # Apply the same correction to all joints in both poses
+        corrected_frame1 = []
+        corrected_frame2 = []
+        
+        for joint in current_pose1:
+            point = np.array([joint['x'], joint['y'], joint['z']]) - correction
+            corrected_frame1.append({
+                'x': float(point[0]),
+                'y': float(point[1]),
+                'z': float(point[2])
+            })
+            
+        for joint in current_pose2:
+            point = np.array([joint['x'], joint['y'], joint['z']]) - correction
+            corrected_frame2.append({
+                'x': float(point[0]),
+                'y': float(point[1]),
+                'z': float(point[2])
+            })
+        
+        corrected_poses1.append(corrected_frame1)
+        corrected_poses2.append(corrected_frame2)
+    
+    return corrected_poses1, corrected_poses2
 
 def process_poses(output_dir: str):
     """Process and adjust 3D poses based on camera movement"""
@@ -392,6 +542,15 @@ def process_poses(output_dir: str):
     if not figure1_frames or not figure2_frames:
         print("Error: No valid poses found after processing")
         return
+
+    # Normalize body scale for both figures
+    print("Normalizing body scale...")
+    figure1_frames = __normalize_body_scale(figure1_frames)
+    figure2_frames = __normalize_body_scale(figure2_frames)
+    
+    # Correct foot slip for both figures together
+    print("Correcting foot slip...")
+    figure1_frames, figure2_frames = __correct_foot_slip(figure1_frames, figure2_frames)
 
     # Apply floor adjustment and smoothing before saving
     figure1_frames = __adjust_floor_level(figure1_frames)
