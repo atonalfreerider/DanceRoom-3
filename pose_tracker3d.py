@@ -404,8 +404,8 @@ def __apply_shadow_smoothing(poses: List[List[Dict[str, float]]], window_size: i
     return smoothed_poses
 
 def process_poses(output_dir: str):
-    """Process and adjust 3D poses based on camera movement"""
-    print("Loading data...")
+    """Process and adjust 3D poses based on camera movement, and track lead and follow dancer"""
+    print("Loading pose and camera rotation data...")
     raw_rotations = __load_vo_data(output_dir)
     poses_data = __load_poses_data(output_dir)
     
@@ -424,8 +424,8 @@ def process_poses(output_dir: str):
     previous_figure1_pos = None
     previous_figure1_height = None
     
-    print("Processing frames...")
-    for frame_num in tqdm(sorted(map(int, frames.keys())), desc="Processing frames"):
+    print("Extracting lead and follow and rotating all poses...")
+    for frame_num in tqdm(sorted(map(int, frames.keys())), desc="Extracting lead and follow and applying rotations"):
         frame_str = str(frame_num)
         frame_data = frames[frame_str]
         
@@ -435,7 +435,7 @@ def process_poses(output_dir: str):
         rotation_matrix = raw_rotations[frame_num]
         valid_poses = []
         
-        # Process all poses in frame
+        # Rotate all poses and extract tallest and closest poses
         for person_data in frame_data:
             adjusted_joints = __adjust_3d_points(person_data['joints3d'], rotation_matrix)
             center = __get_pose_center(adjusted_joints)
@@ -492,7 +492,7 @@ def process_poses(output_dir: str):
         figure1_frames.append(fig1_frame)
         figure2_frames.append(fig2_frame)
 
-    print("Processing with center tracking...")
+    print("Refining lead and follow track with mid sequence tracking...")
     
     # Get frame ranges
     frame_numbers = sorted(map(int, frames.keys()))
@@ -611,13 +611,16 @@ def process_poses(output_dir: str):
     figure1_frames, figure2_frames = __correct_foot_slip(figure1_frames, figure2_frames)
 
     # Apply floor adjustment
+    print("Adjusting floor level...")
     figure1_frames, figure2_frames = __adjust_floor_level(figure1_frames, figure2_frames)
     
     # Apply shadow smoothing
+    print("Smoothing pose positions on floor with moving average...")
     figure1_frames = __apply_shadow_smoothing(figure1_frames)
     figure2_frames = __apply_shadow_smoothing(figure2_frames)
     
     # Apply joint by joint moving average
+    print("Smoothing joints with moving average...")
     figure1_frames = __apply_moving_average(figure1_frames)
     figure2_frames = __apply_moving_average(figure2_frames)
 
@@ -632,7 +635,7 @@ def process_poses(output_dir: str):
     print(f"Figure tracking data saved to {output_dir}/figure1.json and {output_dir}/figure2.json")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Adjust 3D poses based on camera movement.")
+    parser = argparse.ArgumentParser(description="Adjust 3D poses based on camera movement and track and refine lead and follow dancer.")
     parser.add_argument("--output_dir", help="Path to the output directory", required=True)
     args = parser.parse_args()
 
