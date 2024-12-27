@@ -12,3 +12,5 @@ dependencies:
     - opencv-python
     - scipy
     - tqdm
+    - ultralytics
+    - ultralytics-thop

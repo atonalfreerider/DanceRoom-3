@@ -1,10 +1,12 @@
 import cv2
 import json
 import numpy as np
+from torch.backends.mkl import verbose
 from tqdm import tqdm
 from ultralytics import SAM
 import os
 import argparse
+import copy
 
 
 class Sam2:
@@ -17,36 +19,43 @@ class Sam2:
         os.makedirs(self.__output_dir_fig1, exist_ok=True)
         os.makedirs(self.__output_dir_fig2, exist_ok=True)
 
-    def __get_frame_count(self):
-        cap = cv2.VideoCapture(str(self.__video_path))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        return total_frames
-
     def __load_json(self, json_path):
         with open(json_path, 'r') as f:
             return json.load(f)
 
-    def __process_frame(self, frame, boxes, output_dir, frame_idx):
-        for box in boxes:
-            x, y, w, h = int(box[0]), int(box[1]), int(box[2]), int(box[3])
-            mask = np.zeros((frame.shape[0], frame.shape[1], 4), dtype=np.uint8)
-            mask[:, :, 3] = 0  # Set alpha channel to 0 (transparent) for the whole image
-            mask[y:y+h, x:x+w, :3] = frame[y:y+h, x:x+w]
-            mask[y:y+h, x:x+w, 3] = 255  # Set alpha channel to 255 (opaque) for the box region
-            output_path = os.path.join(output_dir, f'{frame_idx}.png')
-            cv2.imwrite(output_path, mask.astype(np.uint8))  # Ensure mask is a numpy array of type uint8
+    def __process_frame(self, frame, masks, output_dir, frame_idx, bboxes, keypoints, adjusted_keypoints):
+        for i, mask in enumerate(masks):
+            x1, y1, x2, y2 = map(int, bboxes[i])  # Ensure bbox coordinates are integers
+            cropped_frame = frame[y1:y2, x1:x2]
+            if cropped_frame.size == 0:
+                continue  # Skip if the cropped frame is empty
+            mask_img = np.zeros((cropped_frame.shape[0], cropped_frame.shape[1], 4), dtype=np.uint8)
+            mask_img[:, :, :3] = cropped_frame  # Copy the cropped frame to the mask image
+            mask_img[:, :, 3] = 0  # Set alpha channel to 0 (transparent) for the whole image
+            mask_img[mask[y1:y2, x1:x2]] = np.concatenate((cropped_frame[mask[y1:y2, x1:x2]], np.full((mask[y1:y2, x1:x2].sum(), 1), 255, dtype=np.uint8)), axis=1)  # Set alpha channel to 255 (opaque) for the mask region
+            output_path = os.path.join(output_dir, f'{frame_idx:04d}.png')
+            cv2.imwrite(output_path, mask_img.astype(np.uint8))  # Ensure mask is a numpy array of type uint8
+
+            # Adjust keypoints
+            adjusted_kps = []
+            for kp in keypoints[i]:
+                adjusted_kps.append([int(kp[0] - x1), int(kp[1] - y1)])
+            adjusted_keypoints.append(adjusted_kps)
 
     def run(self):
         # Load JSON data
         data_fig1 = self.__load_json(self.__json1_path)
         data_fig2 = self.__load_json(self.__json2_path)
 
-        # Get total frame count using OpenCV
-        total_frames = self.__get_frame_count()
+        # Load a model
+        model = SAM("sam2_b.pt")
 
         # Open video capture
         cap = cv2.VideoCapture(str(self.__video_path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        adjusted_keypoints_fig1 = []
+        adjusted_keypoints_fig2 = []
 
         # Loop over frames with tqdm progress bar
         with tqdm(total=total_frames, desc="Processing frames") as pbar:
@@ -55,18 +64,53 @@ class Sam2:
                 if not ret:
                     break
 
+                bboxes_fig1 = []
+                bboxes_fig2 = []
+                keypoints_fig1 = []
+                keypoints_fig2 = []
+
                 if frame_idx < len(data_fig1):
                     boxes_fig1 = data_fig1[frame_idx]['boxes']
-                    self.__process_frame(frame, [boxes_fig1], self.__output_dir_fig1, frame_idx)
+                    x1, y1, w, h, conf = boxes_fig1
+                    x2, y2 = x1 + w, y1 + h
+                    bboxes_fig1.append([x1, y1, x2, y2])
+                    keypoints_fig1.append(data_fig1[frame_idx]['joints2d'])
 
                 if frame_idx < len(data_fig2):
                     boxes_fig2 = data_fig2[frame_idx]['boxes']
-                    self.__process_frame(frame, [boxes_fig2], self.__output_dir_fig2, frame_idx)
+                    x1, y1, w, h, conf = boxes_fig2
+                    x2, y2 = x1 + w, y1 + h
+                    bboxes_fig2.append([x1, y1, x2, y2])
+                    keypoints_fig2.append(data_fig2[frame_idx]['joints2d'])
+
+                # Process fig1
+                if bboxes_fig1:
+                    bboxes = np.array(bboxes_fig1)
+                    results = model(frame, bboxes=bboxes, labels=[1]*len(bboxes_fig1), verbose=False)
+                    for result in results:
+                        masks = result.masks.data.cpu().numpy().astype(bool)
+                        self.__process_frame(frame, masks, self.__output_dir_fig1, frame_idx, bboxes_fig1, keypoints_fig1, adjusted_keypoints_fig1)
+
+                # Process fig2
+                if bboxes_fig2:
+                    bboxes = np.array(bboxes_fig2)
+                    results = model(frame, bboxes=bboxes, labels=[1]*len(bboxes_fig2), verbose=False)
+                    for result in results:
+                        masks = result.masks.data.cpu().numpy().astype(bool)
+                        self.__process_frame(frame, masks, self.__output_dir_fig2, frame_idx, bboxes_fig2, keypoints_fig2, adjusted_keypoints_fig2)
 
                 pbar.update(1)
 
         cap.release()
+
+        # Save adjusted keypoints to JSON files
+        with open(os.path.join(self.__output_dir_fig1, '../fig1_poses2d.json'), 'w') as f:
+            json.dump(adjusted_keypoints_fig1, f, indent=4)
+        with open(os.path.join(self.__output_dir_fig2, '../fig2_poses2d.json'), 'w') as f:
+            json.dump(adjusted_keypoints_fig2, f, indent=4)
+
         print(f"Masked frames saved to {self.__output_dir_fig1} and {self.__output_dir_fig2}")
+        print(f"Adjusted keypoints saved to {os.path.join(self.__output_dir_fig1, '../fig1_poses2d.json')} and {os.path.join(self.__output_dir_fig2, '../fig2_poses2d.json')}")
 
 
 def main():
