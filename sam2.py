@@ -1,13 +1,11 @@
 import cv2
 import json
 import numpy as np
-from torch.backends.mkl import verbose
 from tqdm import tqdm
 from ultralytics import SAM
 import os
 import argparse
-import copy
-
+import argparse
 
 class Sam2:
     def __init__(self, video_path, output_dir, json1_path, json2_path):
@@ -111,7 +109,6 @@ class Sam2:
 
         print(f"Masked frames saved to {self.__output_dir_fig1} and {self.__output_dir_fig2}")
         print(f"Adjusted keypoints saved to {os.path.join(self.__output_dir_fig1, '../fig1_poses2d.json')} and {os.path.join(self.__output_dir_fig2, '../fig2_poses2d.json')}")
-
 
 def main():
     parser = argparse.ArgumentParser(description="Process video and JSON files to extract masked frames.")
