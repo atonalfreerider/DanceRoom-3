@@ -6,7 +6,6 @@ from scipy.spatial.transform import Rotation
 from typing import List, Dict, Any
 from tqdm import tqdm
 from collections import deque
-from scipy.interpolate import interp1d
 
 def __load_vo_data(output_dir: str) -> List[np.ndarray]:
     """Load visual odometry data from json"""
@@ -35,7 +34,7 @@ def __load_vo_data(output_dir: str) -> List[np.ndarray]:
 
 def __load_poses_data(output_dir: str) -> Any | None:
     """Load 3D poses data from json"""
-    poses_path = output_dir + '/' + [f for f in os.listdir(output_dir) if f.endswith('.poses3d.json')][0]
+    poses_path = output_dir + '/poses3d.json'
     
     try:
         with open(poses_path, 'r') as f:
@@ -44,9 +43,10 @@ def __load_poses_data(output_dir: str) -> Any | None:
         print(f"Error: No poses data found at {poses_path}")
         return None
 
-def __adjust_3d_points(points: List[List[float]], rotation_matrix: np.ndarray) -> List[List[float]]:
+def __adjust_3d_points(person_data, rotation_matrix: np.ndarray):
     """Transform points from camera space to world space"""
     # Points are in millimeters, convert to meters
+    points = person_data['joints3d']
     points_array = np.array(points).reshape(-1, 3) / 1000.0
 
     # Transform points from camera space to world space
@@ -54,8 +54,9 @@ def __adjust_3d_points(points: List[List[float]], rotation_matrix: np.ndarray) -
 
     # Flip the sign for all y points
     world_points[:, 1] = -world_points[:, 1]
+    person_data['joints3d'] = world_points.tolist()
     
-    return world_points.tolist()
+    return person_data
 
 def __get_pose_center(joints3d: List[List[float]]) -> np.ndarray:
     """Get center position of pose (average of hip and spine joints)"""
@@ -100,7 +101,7 @@ def __is_similar_height(height1: float, height2: float, threshold: float = 0.15)
         return True
     return abs(height1 - height2) <= threshold
 
-def __adjust_floor_level(poses1: List[List[Dict[str, float]]], poses2: List[List[Dict[str, float]]]) -> tuple[List[List[Dict[str, float]]], List[List[Dict[str, float]]]]:
+def __adjust_floor_level(poses1: List[Dict], poses2: List[Dict]) -> tuple[List[Dict], List[Dict]]:
     """Adjust poses so that the lowest point in each frame is at y=0"""
     adjusted_poses1 = []
     adjusted_poses2 = []
@@ -109,105 +110,121 @@ def __adjust_floor_level(poses1: List[List[Dict[str, float]]], poses2: List[List
     toe_indices = [10, 11]
     
     # Process each frame independently
-    for frame1, frame2 in zip(poses1, poses2):
-        # Find the lowest y value in this frame for both figures
-        min_y1 = min(frame1[idx]['y'] for idx in toe_indices)
-        min_y2 = min(frame2[idx]['y'] for idx in toe_indices)
+    for pose1, pose2 in zip(poses1, poses2):
+        # Convert to numpy arrays
+        joints3d1 = np.array(pose1['joints3d'])
+        joints3d2 = np.array(pose2['joints3d'])
+        
+        # Find lowest y value (index 1 is y coordinate)
+        min_y1 = min(joints3d1[toe_indices, 1])
+        min_y2 = min(joints3d2[toe_indices, 1])
         global_min_y = min(min_y1, min_y2)
         
-        # Adjust all joints in this frame relative to the global minimum y
-        adjusted_frame1 = [
-            {'x': joint['x'], 
-             'y': joint['y'] - global_min_y, 
-             'z': joint['z']} 
-            for joint in frame1
-        ]
-        adjusted_frame2 = [
-            {'x': joint['x'], 
-             'y': joint['y'] - global_min_y, 
-             'z': joint['z']} 
-            for joint in frame2
-        ]
+        # Create copies of original poses
+        adjusted_pose1 = dict(pose1)
+        adjusted_pose2 = dict(pose2)
         
-        adjusted_poses1.append(adjusted_frame1)
-        adjusted_poses2.append(adjusted_frame2)
+        # Adjust y coordinates
+        joints3d1[:, 1] -= global_min_y
+        joints3d2[:, 1] -= global_min_y
+        
+        # Store adjusted joints
+        adjusted_pose1['joints3d'] = joints3d1.tolist()
+        adjusted_pose2['joints3d'] = joints3d2.tolist()
+        
+        adjusted_poses1.append(adjusted_pose1)
+        adjusted_poses2.append(adjusted_pose2)
     
     return adjusted_poses1, adjusted_poses2
 
-def __apply_moving_average(poses: List[List[Dict[str, float]]], window_size: int = 6) -> List[List[Dict[str, float]]]:
+def __apply_moving_average(poses: List[Dict], window_size: int = 6) -> List[Dict]:
     """Apply moving average smoothing to each joint separately"""
     if not poses:
         return poses
     
     num_frames = len(poses)
-    num_joints = len(poses[0])
-    smoothed_poses = [[] for _ in range(num_frames)]
+    num_joints = len(poses[0]['joints3d'])
+    smoothed_poses = []
     
-    # Process each joint separately
-    for joint_idx in range(num_joints):
-        # Separate queues for x, y, z coordinates
-        x_window = deque(maxlen=window_size)
-        y_window = deque(maxlen=window_size)
-        z_window = deque(maxlen=window_size)
+    # Convert all joints3d to numpy arrays
+    joints_data = np.array([pose['joints3d'] for pose in poses])
+    
+    # Create windows for each coordinate of each joint
+    windows = np.zeros((num_joints, 3, window_size))  # (joint, xyz, window)
+    smoothed_joints = np.zeros_like(joints_data)
+    
+    # Process each frame
+    for frame_idx in range(num_frames):
+        # Update windows with current frame data
+        curr_joints = joints_data[frame_idx]
+        for joint_idx in range(num_joints):
+            for coord_idx in range(3):  # x, y, z
+                # Roll window and add new value
+                windows[joint_idx, coord_idx] = np.roll(windows[joint_idx, coord_idx], -1)
+                windows[joint_idx, coord_idx, -1] = curr_joints[joint_idx, coord_idx]
+                
+                # Calculate moving average
+                valid_window = windows[joint_idx, coord_idx, :min(window_size, frame_idx + 1)]
+                if len(valid_window) > 0:
+                    smoothed_joints[frame_idx, joint_idx, coord_idx] = np.mean(valid_window)
         
-        # Process all frames for this joint
-        for frame_idx in range(num_frames):
-            joint = poses[frame_idx][joint_idx]
-            
-            x_window.append(joint['x'])
-            y_window.append(joint['y'])
-            z_window.append(joint['z'])
-            
-            # Calculate moving averages
-            smoothed_joint = {
-                'x': sum(x_window) / len(x_window),
-                'y': sum(y_window) / len(y_window),
-                'z': sum(z_window) / len(z_window)
-            }
-            
-            smoothed_poses[frame_idx].append(smoothed_joint)
+        # Create new pose with smoothed joints3d
+        smoothed_pose = dict(poses[frame_idx])  # Copy original pose
+        smoothed_pose['joints3d'] = smoothed_joints[frame_idx].tolist()
+        smoothed_poses.append(smoothed_pose)
     
     return smoothed_poses
 
-def __interpolate_missing_poses(valid_poses: List[List[Dict]], frame_indices: List[int], total_frames: int) -> List[List[Dict]]:
+def __lerp_vectors(start_vec, end_vec, t):
+    """Linear interpolation between two vectors"""
+    return start_vec + (end_vec - start_vec) * t
+
+def __interpolate_missing_poses(valid_poses: List[Dict], frame_indices: List[int], total_frames: int) -> List[Dict]:
     """Interpolate missing poses using verified poses"""
     if not valid_poses:
         return []
-        
-    num_joints = len(valid_poses[0])  # Number of joints in pose
+
+    # Use first valid pose as template
+    template_pose = valid_poses[0]
+    joints3d_data = [np.array(pose['joints3d'], dtype=np.float32) for pose in valid_poses]
+    frame_indices = np.array(frame_indices, dtype=np.int32)
+    
     interpolated_poses = []
     
-    # Interpolate each joint separately
-    for joint_idx in range(num_joints):
-        # Prepare arrays for interpolation
-        x_points = np.array(frame_indices)
-        y_points = np.array([[pose[joint_idx]['x'], pose[joint_idx]['y'], pose[joint_idx]['z']] 
-                           for pose in valid_poses])
+    # Process each frame
+    for frame_idx in range(total_frames):
+        # Find surrounding keyframes
+        next_idx = np.searchsorted(frame_indices, frame_idx)
         
-        # Create interpolation function
-        f = interp1d(x_points, y_points, axis=0, kind='linear', fill_value='extrapolate')
+        if next_idx == 0:
+            # Before first keyframe - use first pose
+            interpolated_joints = joints3d_data[0]
+        elif next_idx >= len(frame_indices):
+            # After last keyframe - use last pose
+            interpolated_joints = joints3d_data[-1]
+        else:
+            # Interpolate between surrounding keyframes
+            prev_idx = next_idx - 1
+            prev_frame = frame_indices[prev_idx]
+            next_frame = frame_indices[next_idx]
+            t = (frame_idx - prev_frame) / (next_frame - prev_frame)
+            
+            interpolated_joints = __lerp_vectors(
+                joints3d_data[prev_idx],
+                joints3d_data[next_idx],
+                t
+            )
         
-        # Generate complete sequence
-        all_frames = np.arange(total_frames)
-        interpolated = f(all_frames)
-        
-        # Store interpolated joint data
-        if not interpolated_poses:
-            interpolated_poses = [[{} for _ in range(num_joints)] for _ in range(total_frames)]
-        
-        # Fill in interpolated values
-        for frame_idx, joint_pos in enumerate(interpolated):
-            interpolated_poses[frame_idx][joint_idx] = {
-                'x': float(joint_pos[0]),
-                'y': float(joint_pos[1]),
-                'z': float(joint_pos[2])
-            }
+        # Create new pose with interpolated joints3d
+        interpolated_pose = dict(template_pose)  # Preserve original data
+        interpolated_pose['joints3d'] = interpolated_joints.tolist()
+        interpolated_poses.append(interpolated_pose)
     
     return interpolated_poses
 
-def __get_pose_center_of_mass(pose: List[Dict[str, float]]) -> np.ndarray:
+def __get_pose_center_of_mass(pose) -> np.ndarray:
     """Calculate center of mass for a pose"""
-    return np.mean([np.array([j['x'], j['y'], j['z']]) for j in pose], axis=0)
+    return np.mean([np.array([j[0], j[1], j[2]]) for j in pose], axis=0)
 
 def __calculate_limb_lengths(pose: List[Dict[str, float]]) -> Dict[str, float]:
     """Calculate lengths of key limbs in a pose"""
@@ -239,169 +256,138 @@ def __calculate_limb_lengths(pose: List[Dict[str, float]]) -> Dict[str, float]:
     
     return lengths
 
-def __normalize_body_scale(poses: List[List[Dict[str, float]]]) -> List[List[Dict[str, float]]]:
-    """Normalize body scale using median limb lengths"""
+def __normalize_body_scale(poses: List[Dict]) -> List[Dict]:
+    """Normalize body scale using median limb lengths while preserving other data"""
     if not poses:
         return poses
         
-    # Calculate limb lengths for all frames
-    all_lengths = [__calculate_limb_lengths(pose) for pose in poses]
+    # Calculate limb lengths for all frames using joints3d
+    all_lengths = []
+    for pose in poses:
+        joints3d = pose['joints3d']
+        old_format = [{'x': j[0], 'y': j[1], 'z': j[2]} for j in joints3d]
+        all_lengths.append(__calculate_limb_lengths(old_format))
     
-    # Calculate median length for each limb
+    # Calculate scale factors
+    scale_factors = []
     median_lengths = {}
     for limb in all_lengths[0].keys():
         lengths = [frame_lengths[limb] for frame_lengths in all_lengths]
         median_lengths[limb] = np.median(lengths)
     
-    # Calculate average scale factor across all limbs for each frame
-    scale_factors = []
     for frame_lengths in all_lengths:
         ratios = [median_lengths[limb] / frame_lengths[limb] for limb in frame_lengths.keys()]
         scale_factors.append(np.median(ratios))
     
-    # Apply scaling to each frame
+    # Apply scaling to each frame's joints3d only
     normalized_poses = []
     for frame_idx, pose in enumerate(poses):
         scale = scale_factors[frame_idx]
+        joints3d = np.array(pose['joints3d'])
+        
         # Calculate center of pose
-        center = __get_pose_center_of_mass(pose)
+        center = np.mean(joints3d, axis=0)
         
         # Scale points relative to center
-        normalized_frame = []
-        for joint in pose:
-            point = np.array([joint['x'], joint['y'], joint['z']])
-            vector_to_center = point - center
-            scaled_vector = vector_to_center * scale
-            scaled_point = center + scaled_vector
-            
-            normalized_frame.append({
-                'x': float(scaled_point[0]),
-                'y': float(scaled_point[1]),
-                'z': float(scaled_point[2])
-            })
+        vector_to_center = joints3d - center
+        scaled_vectors = vector_to_center * scale
+        scaled_joints3d = center + scaled_vectors
         
-        normalized_poses.append(normalized_frame)
+        # Create new pose with scaled joints3d but original other data
+        normalized_pose = dict(pose)  # Make a copy of original pose
+        normalized_pose['joints3d'] = scaled_joints3d.tolist()  # Only update joints3d
+        normalized_poses.append(normalized_pose)
     
     return normalized_poses
 
-def __correct_foot_slip(poses1: List[List[Dict[str, float]]], poses2: List[List[Dict[str, float]]]) -> tuple[List[List[Dict[str, float]]], List[List[Dict[str, float]]]]:
-    """Correct foot slip by finding the most stationary foot across both poses and applying the same correction"""
+def __correct_foot_slip(poses1: List[Dict], poses2: List[Dict]) -> tuple[List[Dict], List[Dict]]:
+    """Correct foot slip while preserving all pose data"""
     if not poses1 or not poses2:
         return poses1, poses2
     
-    # Indices for foot joints
-    left_foot_idx = 10   # L_Foot
-    right_foot_idx = 11  # R_Foot
+    # Start with copies of first frames
+    corrected_poses1 = [dict(poses1[0])]
+    corrected_poses2 = [dict(poses2[0])]
     
-    corrected_poses1 = [poses1[0]]  # Start with first frame
-    corrected_poses2 = [poses2[0]]  # Start with first frame
+    # Indices for foot joints
+    left_foot_idx = 10
+    right_foot_idx = 11
     
     for i in range(1, len(poses1)):
-        # Get current poses and previously corrected poses
+        # Get current and previous poses
         current_pose1 = poses1[i]
         current_pose2 = poses2[i]
-        prev_pose1 = corrected_poses1[-1]  # Use last corrected pose
-        prev_pose2 = corrected_poses2[-1]  # Use last corrected pose
+        prev_pose1 = corrected_poses1[-1]
+        prev_pose2 = corrected_poses2[-1]
         
-        # Extract only x,z coordinates for feet positions
-        def get_xz(joint): return np.array([joint['x'], joint['z']])
+        def get_xz(joints3d, idx): 
+            return np.array([joints3d[idx][0], joints3d[idx][2]])
         
-        # Figure 1 feet
-        left1_current = get_xz(current_pose1[left_foot_idx])
-        right1_current = get_xz(current_pose1[right_foot_idx])
-        left1_prev = get_xz(prev_pose1[left_foot_idx])
-        right1_prev = get_xz(prev_pose1[right_foot_idx])
-        
-        # Figure 2 feet
-        left2_current = get_xz(current_pose2[left_foot_idx])
-        right2_current = get_xz(current_pose2[right_foot_idx])
-        left2_prev = get_xz(prev_pose2[left_foot_idx])
-        right2_prev = get_xz(prev_pose2[right_foot_idx])
-        
-        # Calculate movement vectors for all feet (x,z only)
+        # Calculate feet movements using joints3d
         movements = [
-            (left1_current - left1_prev),   # Figure 1 left foot
-            (right1_current - right1_prev),  # Figure 1 right foot
-            (left2_current - left2_prev),    # Figure 2 left foot
-            (right2_current - right2_prev)   # Figure 2 right foot
+            get_xz(current_pose1['joints3d'], left_foot_idx) - get_xz(prev_pose1['joints3d'], left_foot_idx),
+            get_xz(current_pose1['joints3d'], right_foot_idx) - get_xz(prev_pose1['joints3d'], right_foot_idx),
+            get_xz(current_pose2['joints3d'], left_foot_idx) - get_xz(prev_pose2['joints3d'], left_foot_idx),
+            get_xz(current_pose2['joints3d'], right_foot_idx) - get_xz(prev_pose2['joints3d'], right_foot_idx)
         ]
         
-        # Find the movement with smallest magnitude
+        # Find minimum movement
         movement_magnitudes = [np.linalg.norm(m) for m in movements]
         min_movement_idx = np.argmin(movement_magnitudes)
         correction_xz = movements[min_movement_idx]
         
-        # Create full correction vector (x,y,z) where y=0
+        # Create full correction vector
         correction = np.array([correction_xz[0], 0, correction_xz[1]])
         
-        # Apply the same correction to all joints in both poses
-        corrected_frame1 = []
-        corrected_frame2 = []
+        # Create new poses with corrected joints3d but original other data
+        corrected_pose1 = dict(current_pose1)
+        corrected_pose2 = dict(current_pose2)
         
-        for joint in current_pose1:
-            point = np.array([joint['x'], joint['y'], joint['z']]) - correction
-            corrected_frame1.append({
-                'x': float(point[0]),
-                'y': float(point[1]),
-                'z': float(point[2])
-            })
-            
-        for joint in current_pose2:
-            point = np.array([joint['x'], joint['y'], joint['z']]) - correction
-            corrected_frame2.append({
-                'x': float(point[0]),
-                'y': float(point[1]),
-                'z': float(point[2])
-            })
+        corrected_pose1['joints3d'] = (np.array(current_pose1['joints3d']) - correction).tolist()
+        corrected_pose2['joints3d'] = (np.array(current_pose2['joints3d']) - correction).tolist()
         
-        corrected_poses1.append(corrected_frame1)
-        corrected_poses2.append(corrected_frame2)
+        corrected_poses1.append(corrected_pose1)
+        corrected_poses2.append(corrected_pose2)
     
     return corrected_poses1, corrected_poses2
 
-def __apply_shadow_smoothing(poses: List[List[Dict[str, float]]], window_size: int = 12) -> List[List[Dict[str, float]]]:
-    """Apply moving average smoothing to the geometric center of each pose's shadow on the floor (XZ plane)"""
+def __apply_shadow_smoothing(poses: List[Dict], window_size: int = 12) -> List[Dict]:
+    """Apply shadow smoothing while preserving all pose data"""
     if not poses:
         return poses
     
     num_frames = len(poses)
-    smoothed_poses = [[] for _ in range(num_frames)]
+    smoothed_poses = []
     
-    # Separate queues for x, z coordinates of the shadow center
     x_window = deque(maxlen=window_size)
     z_window = deque(maxlen=window_size)
     
-    # Process all frames
     for frame_idx in range(num_frames):
-        frame = poses[frame_idx]
+        joints3d = np.array(poses[frame_idx]['joints3d'])
         
-        # Calculate the geometric center of the shadow (XZ plane)
-        x_center = np.mean([joint['x'] for joint in frame])
-        z_center = np.mean([joint['z'] for joint in frame])
+        x_center = np.mean(joints3d[:, 0])
+        z_center = np.mean(joints3d[:, 2])
         
         x_window.append(x_center)
         z_window.append(z_center)
         
-        # Calculate moving averages
         smoothed_x_center = sum(x_window) / len(x_window)
         smoothed_z_center = sum(z_window) / len(z_window)
         
-        # Calculate the translation needed to smooth the shadow
-        translation_x = smoothed_x_center - x_center
-        translation_z = smoothed_z_center - z_center
+        translation = np.array([smoothed_x_center - x_center, 0, smoothed_z_center - z_center])
+        smoothed_joints3d = joints3d + translation
         
-        # Apply the translation to all joints in the frame
-        smoothed_frame = []
-        for joint in frame:
-            smoothed_frame.append({
-                'x': joint['x'] + translation_x,
-                'y': joint['y'],
-                'z': joint['z'] + translation_z
-            })
+        # Create new pose with smoothed joints3d but original other data
+        smoothed_pose = dict(poses[frame_idx])  # Make a copy of original pose
+        smoothed_pose['joints3d'] = smoothed_joints3d.tolist()  # Only update joints3d
         
-        smoothed_poses[frame_idx] = smoothed_frame
+        smoothed_poses.append(smoothed_pose)
     
     return smoothed_poses
+
+def __convert_joints3d_to_xyz_list(joints3d):
+    """Convert joints3d array format to list of xyz dictionaries"""
+    return [{'x': joint[0], 'y': joint[1], 'z': joint[2]} for joint in joints3d]
 
 def process_poses(output_dir: str):
     """Process and adjust 3D poses based on camera movement, and track lead and follow dancer"""
@@ -421,6 +407,8 @@ def process_poses(output_dir: str):
     # Lists to store tracked figures
     figure1_frames = []
     figure2_frames = []
+    figure1_pose2d_boxes = []
+    figure2_pose2d_boxes = []
     previous_figure1_pos = None
     previous_figure1_height = None
     
@@ -437,12 +425,13 @@ def process_poses(output_dir: str):
         
         # Rotate all poses and extract tallest and closest poses
         for person_data in frame_data:
-            adjusted_joints = __adjust_3d_points(person_data['joints3d'], rotation_matrix)
+            adjusted_person_data = __adjust_3d_points(person_data, rotation_matrix)
+            adjusted_joints = adjusted_person_data['joints3d']
             center = __get_pose_center(adjusted_joints)
             height = __calculate_skeletal_height(adjusted_joints)
-            # Store tuple of (joints, center, height, distance_to_camera)
+            # Store tuple of (adjusted_person_data, center, height, distance_to_camera, original_data)
             distance_to_camera = np.linalg.norm(center)
-            valid_poses.append((adjusted_joints, center, height, distance_to_camera))
+            valid_poses.append((adjusted_person_data, center, height, distance_to_camera, person_data))
         
         # Ensure at least two poses
         if len(valid_poses) < 2:
@@ -457,12 +446,13 @@ def process_poses(output_dir: str):
         closest_poses.sort(key=lambda x: x[2], reverse=True)  # Sort by height (descending)
         
         # Refined mode with tracking logic
-        pose1, pos1, height1, _ = closest_poses[0]  # Taller pose
-        pose2, pos2, height2, _ = closest_poses[1]  # Shorter pose
+        pose1, pos1, height1, _, original_data1 = closest_poses[0]  # Taller pose
+        pose2, pos2, height2, _, original_data2 = closest_poses[1]  # Shorter pose
         
         if previous_figure1_pos is None:
             # Initialize tracking with taller pose as figure1
             fig1_pose, fig2_pose = pose1, pose2
+            fig1_original, fig2_original = original_data1, original_data2
             previous_figure1_pos = pos1
             previous_figure1_height = height1
         else:
@@ -474,23 +464,25 @@ def process_poses(output_dir: str):
             
             if valid1_to_fig1 and height1 >= height2:
                 fig1_pose, fig2_pose = pose1, pose2
+                fig1_original, fig2_original = original_data1, original_data2
                 previous_figure1_pos = pos1
                 previous_figure1_height = height1
             elif valid2_to_fig1 and height2 > height1:
                 fig1_pose, fig2_pose = pose2, pose1
+                fig1_original, fig2_original = original_data2, original_data1
                 previous_figure1_pos = pos2
                 previous_figure1_height = height2
             else:
                 # Default to height-based assignment if tracking fails
                 fig1_pose, fig2_pose = pose1, pose2
+                fig1_original, fig2_original = original_data1, original_data2
                 previous_figure1_pos = pos1
                 previous_figure1_height = height1
-        
-        # Convert to xyz object format
-        fig1_frame = [{"x": joint[0], "y": joint[1], "z": joint[2]} for joint in fig1_pose]
-        fig2_frame = [{"x": joint[0], "y": joint[1], "z": joint[2]} for joint in fig2_pose]
-        figure1_frames.append(fig1_frame)
-        figure2_frames.append(fig2_frame)
+
+        figure1_frames.append(fig1_pose)
+        figure2_frames.append(fig2_pose)
+        figure1_pose2d_boxes.append({'joints2d': fig1_original['joints2d'], 'boxes': fig1_original['boxes']})
+        figure2_pose2d_boxes.append({'joints2d': fig2_original['joints2d'], 'boxes': fig2_original['boxes']})
 
     print("Refining lead and follow track with mid sequence tracking...")
     
@@ -521,16 +513,16 @@ def process_poses(output_dir: str):
     valid_fig2_frames.append(mid_frame2)
     valid_fig1_indices.append(mid_idx)
     valid_fig2_indices.append(mid_idx)
-    valid_fig1_centers.append(__get_pose_center_of_mass(mid_frame))
-    valid_fig2_centers.append(__get_pose_center_of_mass(mid_frame2))
+    valid_fig1_centers.append(__get_pose_center_of_mass(mid_frame['joints3d']))
+    valid_fig2_centers.append(__get_pose_center_of_mass(mid_frame2['joints3d']))
     
     # Process forward
     for idx in range(mid_idx + 1, len(figure1_frames)):
         curr_frame1 = figure1_frames[idx]
         curr_frame2 = figure2_frames[idx]
         
-        center1 = __get_pose_center_of_mass(curr_frame1)
-        center2 = __get_pose_center_of_mass(curr_frame2)
+        center1 = __get_pose_center_of_mass(curr_frame1['joints3d'])
+        center2 = __get_pose_center_of_mass(curr_frame2['joints3d'])
         
         # Calculate adaptive search radius
         radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
@@ -565,8 +557,8 @@ def process_poses(output_dir: str):
         curr_frame1 = figure1_frames[idx]
         curr_frame2 = figure2_frames[idx]
         
-        center1 = __get_pose_center_of_mass(curr_frame1)
-        center2 = __get_pose_center_of_mass(curr_frame2)
+        center1 = __get_pose_center_of_mass(curr_frame1['joints3d'])
+        center2 = __get_pose_center_of_mass(curr_frame2['joints3d'])
         
         # Calculate adaptive search radius
         radius1 = BASE_RADIUS + (frames_since_fig1 * 0.1)
@@ -625,14 +617,25 @@ def process_poses(output_dir: str):
     figure2_frames = __apply_moving_average(figure2_frames)
 
     print("Saving results...")
-    # Save figure1.json and figure2.json with the new format
+    # Prepare 3D pose data (xyz format)
+    figure1_xyz = [__convert_joints3d_to_xyz_list(pose['joints3d']) for pose in figure1_frames]
+    figure2_xyz = [__convert_joints3d_to_xyz_list(pose['joints3d']) for pose in figure2_frames]
+    
+    # Save separate files
     with open(os.path.join(output_dir, 'figure1.json'), 'w') as f:
-        json.dump(figure1_frames, f, indent=2)
+        json.dump(figure1_xyz, f, indent=2)
     
     with open(os.path.join(output_dir, 'figure2.json'), 'w') as f:
-        json.dump(figure2_frames, f, indent=2)
+        json.dump(figure2_xyz, f, indent=2)
+        
+    with open(os.path.join(output_dir, 'figure1-pose2d-boxes.json'), 'w') as f:
+        json.dump(figure1_pose2d_boxes, f, indent=2)
+        
+    with open(os.path.join(output_dir, 'figure2-pose2d-boxes.json'), 'w') as f:
+        json.dump(figure2_pose2d_boxes, f, indent=2)
     
-    print(f"Figure tracking data saved to {output_dir}/figure1.json and {output_dir}/figure2.json")
+    print(f"Figure tracking data saved to {output_dir}/figure[1,2].json")
+    print(f"2D pose and boxes data saved to {output_dir}/figure[1,2]-pose2d-boxes.json")
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Adjust 3D poses based on camera movement and track and refine lead and follow dancer.")

@@ -6,7 +6,11 @@ channels:
 dependencies:
   - pip
   - python=3.11
+  - pytorch=2.3.1
+  - torchvision=0.18.1
   - pip:
     - opencv-python
     - scipy
     - tqdm
+    - ultralytics
+    - ultralytics-thop
