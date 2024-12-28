@@ -29,12 +29,20 @@ https://github.com/atonalfreerider/nlf
 NLF model:
 https://github.com/isarandi/nlf/releases/download/v0.2.0/nlf_l_multi.torchscript
 
+Separate Audio Data:
+ffmpeg -i /path/to/vid.mp4 -vn -acodec pcm_s16le path/to/out/audio.wav
+
 ## RUN
 
-Point to folder with poses3d.json and .vo.json
+python poses_tracker3d.py --output_dir=/path
 
-output figure1.json and figure2.json to be provided to HeadMovement
+output figure1.json and figure2.json to be provided to HeadMovement and poses2d_boxes
 https://github.com/atonalfreerider/head-movement
+
+python sam2.py --video=/path --json_folder=/path --output_dir=/path
+
+python video_meta.py <path_to_video.mp4>"
+
 
 
 
