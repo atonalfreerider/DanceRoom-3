@@ -5,7 +5,6 @@ from tqdm import tqdm
 from ultralytics import SAM
 import os
 import argparse
-import argparse
 
 class Sam2:
     def __init__(self, video_path, output_dir, json1_path, json2_path):
@@ -17,11 +16,13 @@ class Sam2:
         os.makedirs(self.__output_dir_fig1, exist_ok=True)
         os.makedirs(self.__output_dir_fig2, exist_ok=True)
 
-    def __load_json(self, json_path):
+    @staticmethod
+    def __load_json(json_path):
         with open(json_path, 'r') as f:
             return json.load(f)
 
-    def __process_frame(self, frame, masks, output_dir, frame_idx, bboxes, keypoints, adjusted_keypoints):
+    @staticmethod
+    def __process_frame(frame, masks, output_dir, frame_idx, bboxes, keypoints, adjusted_keypoints):
         for i, mask in enumerate(masks):
             x1, y1, x2, y2 = map(int, bboxes[i])  # Ensure bbox coordinates are integers
             cropped_frame = frame[y1:y2, x1:x2]
@@ -30,7 +31,13 @@ class Sam2:
             mask_img = np.zeros((cropped_frame.shape[0], cropped_frame.shape[1], 4), dtype=np.uint8)
             mask_img[:, :, :3] = cropped_frame  # Copy the cropped frame to the mask image
             mask_img[:, :, 3] = 0  # Set alpha channel to 0 (transparent) for the whole image
-            mask_img[mask[y1:y2, x1:x2]] = np.concatenate((cropped_frame[mask[y1:y2, x1:x2]], np.full((mask[y1:y2, x1:x2].sum(), 1), 255, dtype=np.uint8)), axis=1)  # Set alpha channel to 255 (opaque) for the mask region
+            mask_img[mask[y1:y2, x1:x2]] = np.concatenate(
+                (cropped_frame[mask[y1:y2, x1:x2]],
+                 np.full((mask[y1:y2, x1:x2].sum(), 1),
+                         255,
+                         dtype=np.uint8)),
+                axis=1)  # Set alpha channel to 255 (opaque) for the mask region
+
             output_path = os.path.join(output_dir, f'{frame_idx:04d}.png')
             cv2.imwrite(output_path, mask_img.astype(np.uint8))  # Ensure mask is a numpy array of type uint8
 
