@@ -2,6 +2,7 @@ import cv2
 import json
 import sys
 import os
+import shutil
 
 def extract_video_metadata(video_path):
     # Check if the file exists
@@ -37,22 +38,27 @@ def extract_video_metadata(video_path):
 
 def main():
     # Check if the video path is provided
-    if len(sys.argv) != 2:
-        print("Usage: python video_meta.py <path_to_video.mp4>")
+    if len(sys.argv) != 3:
+        print("Usage: python video_meta.py <path_to_video.mp4> <output_dir>")
         sys.exit(1)
 
     video_path = sys.argv[1]
+    output_dir = sys.argv[2]
     metadata = extract_video_metadata(video_path)
 
     # Prepare the JSON file name
     base_name = os.path.splitext(os.path.basename(video_path))[0]
     json_filename = f"{base_name}_meta.json"
+    json_filepath = os.path.join(os.path.dirname(video_path), json_filename)
 
     # Write metadata to JSON file
-    with open(json_filename, 'w') as json_file:
+    with open(json_filepath, 'w') as json_file:
         json.dump(metadata, json_file, indent=4)
 
-    print(f"Metadata has been written to '{json_filename}'.")
+    # Move and rename the JSON file to the output directory
+    shutil.move(json_filepath, os.path.join(output_dir, "video_meta.json"))
+
+    print(f"Metadata has been written to '{os.path.join(output_dir, 'video_meta.json')}'.")
 
 if __name__ == "__main__":
     main()
