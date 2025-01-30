@@ -75,14 +75,14 @@ class Sam2:
                 keypoints_fig2 = []
 
                 if frame_idx < len(data_fig1):
-                    boxes_fig1 = data_fig1[frame_idx]['boxes']
+                    boxes_fig1 = data_fig1[frame_idx]['box']
                     x1, y1, w, h, conf = boxes_fig1
                     x2, y2 = x1 + w, y1 + h
                     bboxes_fig1.append([x1, y1, x2, y2])
                     keypoints_fig1.append(data_fig1[frame_idx]['joints2d'])
 
                 if frame_idx < len(data_fig2):
-                    boxes_fig2 = data_fig2[frame_idx]['boxes']
+                    boxes_fig2 = data_fig2[frame_idx]['box']
                     x1, y1, w, h, conf = boxes_fig2
                     x2, y2 = x1 + w, y1 + h
                     bboxes_fig2.append([x1, y1, x2, y2])

@@ -31,11 +31,11 @@ def process_video(video_path, output_path, pose_data_dir):
         
         if frame_idx < len(figure1_data):
             figure1 = figure1_data[frame_idx]
-            draw_pose_and_box(frame, figure1['joints2d'], figure1['boxes'], (0, 0, 255))  # Red for figure1
+            draw_pose_and_box(frame, figure1['joints2d'], figure1['box'], (0, 0, 255))  # Red for figure1
         
         if frame_idx < len(figure2_data):
             figure2 = figure2_data[frame_idx]
-            draw_pose_and_box(frame, figure2['joints2d'], figure2['boxes'], (255, 255, 255))  # White for figure2
+            draw_pose_and_box(frame, figure2['joints2d'], figure2['box'], (255, 255, 255))  # White for figure2
         
         out.write(frame)
         frame_idx += 1

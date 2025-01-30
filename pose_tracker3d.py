@@ -481,8 +481,8 @@ def process_poses(output_dir: str):
 
         figure1_frames.append(fig1_pose)
         figure2_frames.append(fig2_pose)
-        figure1_pose2d_boxes.append({'joints2d': fig1_original['joints2d'], 'boxes': fig1_original['boxes']})
-        figure2_pose2d_boxes.append({'joints2d': fig2_original['joints2d'], 'boxes': fig2_original['boxes']})
+        figure1_pose2d_boxes.append({'joints2d': fig1_original['joints2d'], 'box': fig1_original['box']})
+        figure2_pose2d_boxes.append({'joints2d': fig2_original['joints2d'], 'box': fig2_original['box']})
 
     print("Refining lead and follow track with mid sequence tracking...")
     
