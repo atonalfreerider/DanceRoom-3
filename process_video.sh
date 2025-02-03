@@ -44,13 +44,17 @@ cd $NLF_PATH
 python main.py $INPUT_VIDEO $OUTPUT_DIR
 
 # Separate Audio Data
-ffmpeg -i $INPUT_VIDEO -vn -acodec pcm_s16le $OUTPUT_DIR/audio.wav
+ffmpeg -y -i $INPUT_VIDEO -vn -acodec pcm_s16le $OUTPUT_DIR/audio.wav
 
 # Run DanceRoom3 scripts
 conda activate DanceRoom3
 cd /home/john/Desktop/3DPose/DanceRoom-3
 python pose_tracker3d.py --output_dir=$OUTPUT_DIR
 python sam2.py --video=$INPUT_VIDEO --output_dir=$OUTPUT_DIR
-python video_meta.py $INPUT_VIDEO $OUTPUT_DIR
+
+# Run Video-Depth-Anything
+conda activate VideoDepthAnything
+cd /home/john/Desktop/Video/Video-Depth-Anything
+python run.py --input_video $INPUT_VIDEO --output_dir $OUTPUT_DIR
 
 echo "Processing complete. Outputs are in $OUTPUT_DIR"
