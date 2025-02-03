@@ -6,7 +6,7 @@ conda env create -f environment.yml
 
 ## RUN SHELL  
 
-run the prochess_video.sh
+run the process_video.sh
 - provide codebase locations
 
 prochess_video.sh <input-video-path> <output-dir-path>  
@@ -57,9 +57,7 @@ python sam2.py --video=/path --json_folder=/path --output_dir=/path
 
 python video_meta.py <path_to_video.mp4>"
 
-
-
-output figure1.json and figure2.json to be provided to HeadMovement and poses2d_boxes
+output figure1.json and figure2.json to be provided to HeadMovement, with audio, video meta, and zouk beat
 https://github.com/atonalfreerider/head-movement
 
 
