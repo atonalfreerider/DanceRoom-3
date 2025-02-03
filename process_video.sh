@@ -39,7 +39,7 @@ ffmpeg -i $INPUT_VIDEO -vn -acodec pcm_s16le $OUTPUT_DIR/audio.wav
 conda activate DanceRoom3
 cd /home/john/Desktop/3DPose/DanceRoom-3
 python pose_tracker3d.py --output_dir=$OUTPUT_DIR
-python sam2.py --video=$INPUT_VIDEO --json_folder=$OUTPUT_DIR --output_dir=$OUTPUT_DIR
+python sam2.py --video=$INPUT_VIDEO --output_dir=$OUTPUT_DIR
 python video_meta.py $INPUT_VIDEO $OUTPUT_DIR
 
 echo "Processing complete. Outputs are in $OUTPUT_DIR"

@@ -9,12 +9,10 @@ import argparse
 class Sam2:
     def __init__(self, video_path, output_dir, json1_path, json2_path):
         self.__video_path = video_path
-        self.__output_dir_fig1 = os.path.join(output_dir, 'fig1')
-        self.__output_dir_fig2 = os.path.join(output_dir, 'fig2')
         self.__json1_path = json1_path
         self.__json2_path = json2_path
-        os.makedirs(self.__output_dir_fig1, exist_ok=True)
-        os.makedirs(self.__output_dir_fig2, exist_ok=True)
+        self.__output_dir = os.path.join(output_dir, 'seg')
+        os.makedirs(self.__output_dir, exist_ok=True)
 
     @staticmethod
     def __load_json(json_path):
@@ -58,10 +56,7 @@ class Sam2:
         # Open video capture
         cap = cv2.VideoCapture(str(self.__video_path))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-
-        adjusted_keypoints_fig1 = []
-        adjusted_keypoints_fig2 = []
-
+        
         # Loop over frames with tqdm progress bar
         with tqdm(total=total_frames, desc="Processing frames") as pbar:
             for frame_idx in range(total_frames):
@@ -88,49 +83,47 @@ class Sam2:
                     bboxes_fig2.append([x1, y1, x2, y2])
                     keypoints_fig2.append(data_fig2[frame_idx]['joints2d'])
 
+                masked_frame = np.zeros((frame.shape[0], frame.shape[1], 4), dtype=np.uint8)
+
                 # Process fig1
                 if bboxes_fig1:
-                    bboxes = np.array(bboxes_fig1)
-                    results = model(frame, bboxes=bboxes, labels=[1]*len(bboxes_fig1), verbose=False)
+                    results = model(frame, bboxes=np.array(bboxes_fig1), labels=[1]*len(bboxes_fig1), verbose=False)
                     for result in results:
                         masks = result.masks.data.cpu().numpy().astype(bool)
-                        self.__process_frame(frame, masks, self.__output_dir_fig1, frame_idx, bboxes_fig1, keypoints_fig1, adjusted_keypoints_fig1)
+                        for mask in masks:
+                            masked_frame[mask, :3] = frame[mask]  # copy BGR
+                            masked_frame[mask, 3] = 255           # set alpha
 
                 # Process fig2
                 if bboxes_fig2:
-                    bboxes = np.array(bboxes_fig2)
-                    results = model(frame, bboxes=bboxes, labels=[1]*len(bboxes_fig2), verbose=False)
+                    results = model(frame, bboxes=np.array(bboxes_fig2), labels=[1]*len(bboxes_fig2), verbose=False)
                     for result in results:
                         masks = result.masks.data.cpu().numpy().astype(bool)
-                        self.__process_frame(frame, masks, self.__output_dir_fig2, frame_idx, bboxes_fig2, keypoints_fig2, adjusted_keypoints_fig2)
+                        for mask in masks:
+                            masked_frame[mask, :3] = frame[mask]
+                            masked_frame[mask, 3] = 255
+
+                output_path = os.path.join(self.__output_dir, f"{frame_idx:04d}.png")
+                cv2.imwrite(output_path, masked_frame)
 
                 pbar.update(1)
 
         cap.release()
 
-        # Save adjusted keypoints to JSON files
-        with open(os.path.join(self.__output_dir_fig1, '../fig1_poses2d.json'), 'w') as f:
-            json.dump(adjusted_keypoints_fig1, f, indent=4)
-        with open(os.path.join(self.__output_dir_fig2, '../fig2_poses2d.json'), 'w') as f:
-            json.dump(adjusted_keypoints_fig2, f, indent=4)
-
-        print(f"Masked frames saved to {self.__output_dir_fig1} and {self.__output_dir_fig2}")
-        print(f"Adjusted keypoints saved to {os.path.join(self.__output_dir_fig1, '../fig1_poses2d.json')} and {os.path.join(self.__output_dir_fig2, '../fig2_poses2d.json')}")
+        print(f"Masked frames saved to {self.__output_dir}")
 
 def main():
     parser = argparse.ArgumentParser(description="Process video and JSON files to extract masked frames.")
     parser.add_argument('--video', required=True, help='Path to the input video file.')
-    parser.add_argument('--json_folder', required=True, help='Path to the folder containing the JSON files.')
     parser.add_argument('--output_dir', required=True, help='Path to the output directory.')
 
     args = parser.parse_args()
 
     video_path = args.video
-    json_folder = args.json_folder
     output_dir = args.output_dir
 
-    json1_path = os.path.join(json_folder, 'figure1-pose2d-boxes.json')
-    json2_path = os.path.join(json_folder, 'figure2-pose2d-boxes.json')
+    json1_path = os.path.join(output_dir, 'figure1-pose2d-boxes.json')
+    json2_path = os.path.join(output_dir, 'figure2-pose2d-boxes.json')
 
     sam2 = Sam2(video_path, output_dir, json1_path, json2_path)
     sam2.run()
