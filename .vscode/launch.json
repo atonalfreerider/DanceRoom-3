@@ -1,0 +1,53 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug pose_tracker3d",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/pose_tracker3d.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--output_dir=/home/john/Desktop/lucas-luiza-dutch-25"
+            ],
+            "python": "/home/john/miniconda3/envs/DanceRoom3/bin/python"
+        },
+        {
+            "name": "Debug camera_transform",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/camera_transform.py",
+            "console": "integratedTerminal",
+            "args": [
+                "/home/john/Desktop/lucas-luiza-dutch-25/poses3d-camera.json",
+                "/home/john/Desktop/lucas-luiza-dutch-25/poses3d.json",
+                "handheld"
+            ],
+            "python": "/home/john/miniconda3/envs/DanceRoom3/bin/python"
+        },
+        {
+            "name": "Debug video_meta",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/video_meta.py",
+            "console": "integratedTerminal",
+            "args": [
+                "/home/john/Videos/Zouk/lucas-luiza-dutch-25.mp4",
+                "/home/john/Desktop/lucas-luiza-dutch-25"
+            ],
+            "python": "/home/john/miniconda3/envs/DanceRoom3/bin/python"
+        },
+        {
+            "name": "Python Debugger: Current File with Arguments",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "args": "${command:pickArgs}",
+            "python": "/home/john/miniconda3/envs/DanceRoom3/bin/python"
+        }
+    ]
+}

@@ -62,30 +62,56 @@ class DanceVideoProcessor:
         self.checkbox_vars = {}
         self.default_options = {
             "fixed_focal_length": True,
-            "translating_position": True,
-            "changing_orientation": True
+            "camera_model": "handheld"  # Add default camera model
         }
         
-        checkboxes = [
-            ("fixed_focal_length", "Fixed Focal Length"),
-            ("translating_position", "Translating Position"),
-            ("changing_orientation", "Changing Orientation")
+        # Camera Model Selection (radio buttons)
+        ttk.Label(self.options_frame, text="Camera Model:", font=('helvetica', 10, 'bold')).grid(
+            row=0, column=0, sticky=tk.W, padx=5, pady=(5, 2)
+        )
+        
+        camera_frame = ttk.Frame(self.options_frame)
+        camera_frame.grid(row=1, column=0, sticky=tk.W, padx=15, pady=(0, 10))
+        
+        # Create radio button variable
+        self.camera_model_var = tk.StringVar(value="handheld")
+        self.checkbox_vars["camera_model"] = self.camera_model_var
+        
+        camera_options = [
+            ("static", "Static Camera"),
+            ("tripod", "Tripod Mount"),
+            ("handheld", "Handheld Camera")
         ]
         
-        # Initialize video_options
-        self.video_options = {}
-        
-        # Create checkboxes with modified binding
-        for i, (option_id, label) in enumerate(checkboxes):
-            var = tk.BooleanVar(value=True)
-            checkbox = ttk.Checkbutton(
-                self.options_frame,
+        for value, label in camera_options:
+            rb = ttk.Radiobutton(
+                camera_frame,
                 text=label,
-                variable=var,
-                command=lambda opt=option_id: self.on_checkbox_changed(opt)
+                variable=self.camera_model_var,
+                value=value,
+                command=lambda: self.on_camera_model_changed()
             )
-            checkbox.grid(row=i, column=0, sticky=tk.W, padx=5, pady=2)
-            self.checkbox_vars[option_id] = var
+            rb.pack(anchor=tk.W)
+        
+        # Separator
+        ttk.Separator(self.options_frame, orient='horizontal').grid(
+            row=2, column=0, sticky=(tk.W, tk.E), padx=5, pady=5
+        )
+        
+        # Focal Length checkbox
+        ttk.Label(self.options_frame, text="Focal Length:", font=('helvetica', 10, 'bold')).grid(
+            row=3, column=0, sticky=tk.W, padx=5, pady=(5, 2)
+        )
+        
+        var = tk.BooleanVar(value=True)
+        checkbox = ttk.Checkbutton(
+            self.options_frame,
+            text="Fixed Focal Length",
+            variable=var,
+            command=lambda: self.on_checkbox_changed("fixed_focal_length")
+        )
+        checkbox.grid(row=4, column=0, sticky=tk.W, padx=15, pady=2)
+        self.checkbox_vars["fixed_focal_length"] = var
 
         # Collective metadata form
         form_frame = ttk.LabelFrame(main_frame, text="Collection Metadata", padding="5")
@@ -177,14 +203,16 @@ class DanceVideoProcessor:
                     
                     self.videos_info = data.get("videos_info", {})
                     
-                    # Convert stored options to BooleanVar
+                    # Convert stored options to BooleanVar/StringVar
                     stored_options = data.get("video_options", {})
                     self.video_options.clear()
                     for video, options in stored_options.items():
-                        self.video_options[video] = {
-                            opt: tk.BooleanVar(value=val)
-                            for opt, val in options.items()
-                        }
+                        self.video_options[video] = {}
+                        for opt, val in options.items():
+                            if opt == "camera_model":
+                                self.video_options[video][opt] = tk.StringVar(value=val)
+                            else:
+                                self.video_options[video][opt] = tk.BooleanVar(value=val)
             
             # Only scan for new videos, don't overwrite existing metadata
             for file in os.listdir(directory):
@@ -201,8 +229,8 @@ class DanceVideoProcessor:
                     # Initialize options only for new videos
                     if file not in self.video_options:
                         self.video_options[file] = {
-                            opt: tk.BooleanVar(value=self.default_options[opt])
-                            for opt in self.default_options
+                            "fixed_focal_length": tk.BooleanVar(value=self.default_options["fixed_focal_length"]),
+                            "camera_model": tk.StringVar(value=self.default_options["camera_model"])
                         }
             
             self.update_video_list_display()
@@ -231,7 +259,22 @@ class DanceVideoProcessor:
             if video_name in self.video_options:
                 for opt_name, checkbox_var in self.checkbox_vars.items():
                     video_opt = self.video_options[video_name][opt_name]
-                    checkbox_var.set(video_opt.get())
+                    if isinstance(checkbox_var, tk.StringVar):  # Radio button
+                        checkbox_var.set(video_opt.get() if hasattr(video_opt, 'get') else video_opt)
+                    else:  # Regular checkbox
+                        checkbox_var.set(video_opt.get())
+
+    def on_camera_model_changed(self):
+        """Handle camera model radio button changes"""
+        if self.current_video and self.current_video in self.video_options:
+            # Update the video_options with the new camera model
+            new_value = self.camera_model_var.get()
+            if isinstance(self.video_options[self.current_video]["camera_model"], tk.StringVar):
+                self.video_options[self.current_video]["camera_model"].set(new_value)
+            else:
+                # Convert to StringVar if it's a plain string
+                self.video_options[self.current_video]["camera_model"] = tk.StringVar(value=new_value)
+            self.save_metadata()
 
     def on_checkbox_changed(self, option_id):
         """Handle checkbox state changes"""
@@ -295,7 +338,7 @@ class DanceVideoProcessor:
                     for field, var in self.form_fields.items()
                 })
                 
-                # Convert BooleanVar to regular bool for JSON
+                # Convert BooleanVar/StringVar to regular bool/str for JSON
                 video_options_json = {}
                 for video, options in self.video_options.items():
                     video_options_json[video] = {
@@ -378,18 +421,13 @@ class DanceVideoProcessor:
                         # Create base command
                         cmd = ["bash", script_path]
                         
-                        # Add video options as a single argument
-                        options = []
-                        if self.video_options[video]["fixed_focal_length"].get():
-                            options.append("fixed-focal")
-                        if self.video_options[video]["translating_position"].get():
-                            options.append("translating")
-                        if self.video_options[video]["changing_orientation"].get():
-                            options.append("orientation")
+                        # Add camera model and focal length options
+                        camera_model = self.video_options[video]["camera_model"].get()
+                        fixed_focal = self.video_options[video]["fixed_focal_length"].get()
                         
-                        # Add options as a comma-separated string if any exist
-                        if options:
-                            cmd.append("--options=" + ",".join(options))
+                        cmd.append(f"--camera_model={camera_model}")
+                        if fixed_focal:
+                            cmd.append("--fixed_focal_length")
                             
                         # Add input and output paths
                         cmd.extend([video_path, output_subdir])

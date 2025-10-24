@@ -1,0 +1,4 @@
+{
+    "python.defaultInterpreterPath": "/home/john/miniconda3/envs/DanceRoom3/bin/python",
+    "python.terminal.activateEnvironment": true
+}
